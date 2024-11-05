@@ -29,11 +29,12 @@ ArchitecturesAllowed=x64compatible
 ; the 64-bit view of the registry.
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
-InfoBeforeFile=C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Python\IP Switcher\Siste Versjon\IP_Switcher_Pre_Installation_Info.txt
-InfoAfterFile=C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Python\IP Switcher\Siste Versjon\IP_Switcher_Post_Installation_Info.txt
+InfoBeforeFile=IP_Switcher_Pre_Installation_Info.txt
+InfoAfterFile=IP_Switcher_Post_Installation_Info.txt
 ; Uncomment the following line to run in non administrative install mode (install for current user only.)
 ;PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+OutputDir=installer_files
 OutputBaseFilename={#MyAppName}-{#MyAppVersion}-Installer-x64
 Compression=lzma
 SolidCompression=yes
@@ -46,8 +47,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}";
 
 [Files]
-Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Python\IP Switcher\Siste Versjon\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Python\IP Switcher\Siste Versjon\icon2.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Trafsys github\IP-Switcher\src\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Trafsys github\IP-Switcher\src\icon2.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
