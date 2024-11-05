@@ -1,0 +1,17 @@
+IP Switcher Pre-Installation Information
+============================================
+
+Welcome to the installation of IP Switcher!
+
+This tool allows you to manage, configure, and monitor IP addresses on your selected network interface. Below are the key features:
+
+- Configure Multiple IP Addresses: Set and manage multiple IP configurations for your network interfaces.
+- Network Status Checking: Use built-in ping functionality to check the status of IP addresses on your network.
+- Import and Export Configurations: Easily import and export IP configurations to and from files.
+- User-Friendly Interface: Enjoy a GUI-based tool that simplifies network management tasks.
+
+Important Notes:
+- Ensure that you have administrator privileges to change network settings.
+- This application is compatible with Windows operating systems only.
+
+Thank you for choosing IP Switcher. Click "Next" to continue with the installation.

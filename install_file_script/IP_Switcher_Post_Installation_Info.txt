@@ -1,0 +1,18 @@
+IP Switcher Post-Installation Information
+=============================================
+
+Thank you for installing IP Switcher!
+
+You have successfully installed the application, and it is now ready to use. Below are some important points to consider:
+
+- Launch the Application: You can start IP Switcher from the Start Menu or by using the desktop shortcut if you chose to create one during installation.
+- Help Menu: A help menu is included with the program, which provides detailed instructions on how to use the application effectively.
+- Support: If you encounter any issues or have questions, please contact SiS.
+
+Getting Started:
+1. Open IP Switcher.
+2. Select your network interface from the dropdown menu.
+3. Configure your IP addresses, subnet masks, and gateways as needed.
+4. Use the ping feature to verify network connectivity.
+
+Enjoy using the application!
