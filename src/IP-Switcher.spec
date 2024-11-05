@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['switch_flasher_script10.py'],
+    ['IP-Switcher_Source_Code_4.3.py'],
     pathex=[],
     binaries=[],
     datas=[],
