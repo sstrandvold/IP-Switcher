@@ -2,10 +2,10 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "IP Switcher"
-#define MyAppVersion "4.3"
+#define MyAppVersion "4.3.1"
 #define MyAppPublisher "Trafsys AS"
 #define MyAppURL "https://www.trafsys.no/"
-#define MyAppExeName "IP Switcher 4.3.exe"
+#define MyAppExeName "IP Switcher 4.3.1.exe"
 #define ProjectsFolderName "IP Switcher Projects"
 
 [Setup]
@@ -48,7 +48,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Trafsys github\IP-Switcher\src\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Trafsys github\IP-Switcher\src\icon2.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\vv72\OneDrive - Trafsys A S\Dokumenter\Trafsys github\IP-Switcher\src\icon3.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

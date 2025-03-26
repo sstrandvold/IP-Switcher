@@ -468,7 +468,7 @@ def create_ip_updater():
 
     # Set the window icon
     try:
-        window.iconbitmap('icon2.ico')  # Specify the path to your icon file
+        window.iconbitmap('icon3.ico')  # Specify the path to your icon file
     except:
         messagebox.showerror("Error", "Could not fetch icon. There might be something wrong with your installation.")
 

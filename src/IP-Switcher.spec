@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['IP-Switcher_Source_Code_4.3.py'],
+    ['IP-Switcher_Source_Code_4.3.1.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -21,7 +21,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='IP Switcher 4.3',
+    name='IP Switcher 4.3.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -36,5 +36,5 @@ exe = EXE(
     entitlements_file=None,
     uac_admin=True,
     manifest='IP-Switcher.manifest',
-	icon='icon2.ico'
+	icon='icon3.ico'
 )

@@ -9,6 +9,7 @@ import time
 import json
 import os
 import sys
+import customtkinter as ctk
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -461,14 +462,18 @@ def show_about_info():
 # ------- GUI --------
 
 def create_ip_updater():
-    window = tk.Tk()
+    ctk.set_appearance_mode("Dark")  # Set the dark mode theme
+    ctk.set_default_color_theme("green")  # Set the color theme
+
+    window = ctk.CTk()  # Create the main window using customtkinter
     window.title("IP Switcher 4.3.1")
-    window['padx'] = 4  # Add padding to the left and right
-    window['pady'] = 4  # Add padding to the top and bottom
+    window.geometry("800x600")  # Set a default size for better visuals
+    #window['padx'] = 4  # Add padding to the left and right
+    #window['pady'] = 4  # Add padding to the top and bottom
 
     # Set the window icon
     try:
-        window.iconbitmap('icon2.ico')  # Specify the path to your icon file
+        window.iconbitmap('icon3.ico')  # Specify the path to your icon file
     except:
         messagebox.showerror("Error", "Could not fetch icon. There might be something wrong with your installation.")
 
@@ -477,132 +482,21 @@ def create_ip_updater():
     menu_bar = tk.Menu(window)
     window.config(menu=menu_bar)
 
+    menu_frame = ctk.CTkFrame(window, width=150)
+    menu_frame.grid(row=0, column=0, sticky="nsw")
+
+    btn1 = ctk.CTkButton(menu_frame, text="Option 1")
+    btn1.pack(pady=10)
+
+    btn2 = ctk.CTkButton(menu_frame, text="Option 2")
+    btn2.pack(pady=10)
+
+    btn_exit = ctk.CTkButton(menu_frame, text="Exit", command=window.destroy)
+    btn_exit.pack(pady=10)
+
     def close_application():
         export_project(ip_entry, subnet_entry, gateway_entry, ip_tree, ping_interval_entry, True)
         window.destroy()
-
-    interface_var = tk.StringVar(window)
-    interfaces_cache = []  # Cache interfaces to avoid re-fetching
-
-    # Interface dropdown
-    tk.Label(window, text="Select Interface:").grid(row=row, column=0, sticky='e')
-    interface_dropdown = ttk.Combobox(window, textvariable=interface_var, state="readonly")
-    interface_dropdown.grid(row=row, column=1, columnspan=3, sticky="ew")
-
-    # Refresh button
-    refresh_button = tk.Button(window, text="Refresh", width=7, command=lambda: refresh_interfaces(interface_dropdown, interface_var, interfaces_cache))
-    refresh_button.grid(row=row, column=4)
-
-    dhcp_button = tk.Button(window, text="DHCP", width=7, command=lambda: enable_dhcp(interface_var, ip_current, subnet_current, gateway_current, interfaces_cache))
-    dhcp_button.grid(row=row, column=5)
-
-
-    # ------- NEXT ROW ----------
-    row += 1
-
-    # Headers
-    tk.Label(window, text="IP Address:").grid(row=row, column=1)
-    tk.Label(window, text="Subnet Mask:").grid(row=row, column=3)
-    tk.Label(window, text="Gateway:").grid(row=row, column=4)
-
-    # ------- NEXT ROW ----------
-    row += 1
-
-    # Current IP and Subnet display
-    tk.Label(window, text="Current IP Address:").grid(row=row, column=0, sticky='e')
-    ip_current = tk.Entry(window, state='readonly')
-    ip_current.grid(row=row, column=1)
-    subnet_current = tk.Entry(window, state='readonly')
-    subnet_current.grid(row=row, column=3)
-    gateway_current = tk.Entry(window, state='readonly')
-    gateway_current.grid(row=row, column=4)
-
-     # ------- NEXT ROW ----------
-    row += 1
-
-    # Trace changes in the interface_var
-    interface_var.trace_add("write", lambda *args: update_display(interface_var, ip_current, subnet_current, gateway_current, interfaces_cache))
-
-    # Initial population of interfaces
-    refresh_interfaces(interface_dropdown, interface_var, interfaces_cache)
-
-    rows = 5
-    ip_entry = {}
-    subnet_entry = {}
-    gateway_entry = {}
-    set_ip_button = {}
-    for i in range(rows):
-        tk.Label(window, text=f"IP Number {i+1}: ").grid(row=row, column=0, sticky='e')
-        ip_entry[i] = tk.Entry(window)
-        ip_entry[i].grid(row=row, column=1)
-        #tk.Label(window, text=" ").grid(row=row, column=2)
-        subnet_entry[i] = tk.Entry(window)
-        subnet_entry[i].grid(row=row, column=3)
-        subnet_entry[i].insert(0, "255.255.255.0")
-        gateway_entry[i] = tk.Entry(window)
-        gateway_entry[i].grid(row=row, column=4)
-        # Set IP Button
-        set_ip_button[i] = tk.Button(window, text="Set IP", width=7,
-                                command=lambda j=i: change_ip(interface_var, ip_entry, subnet_entry, gateway_entry, ip_tree, ping_interval_entry, j, ip_current, subnet_current, gateway_current, interfaces_cache))
-        set_ip_button[i].grid(row=row, column=5, padx=3)
-        row += 1
-
-    # ------- NEXT ROW ----------
-    #row += 1
-    # CSV Config Upload Button
-    #upload_button = tk.Button(window, text="Upload CSV Config", command=lambda: upload_config(interface_var, ip_entry, subnet_entry, gateway_entry))
-    #upload_button.grid(row=row, column=0, columnspan=5, sticky="ew")
-
-    # ------- NEXT ROW ----------
-    row += 1
-
-    def edit_tree_item(event):
-    # Get the focused item and column
-        item = ip_tree.focus()
-        column = ip_tree.identify_column(event.x)
-
-        # Only allow editing for IP and Hostname columns
-        if column == "#1" or column == "#2":
-
-            # Get the bounding box of the cell
-            try:
-                x, y, width, height = ip_tree.bbox(item, column)
-            except:
-                add_new_ip(window, ip_tree)
-                return
-
-            # Place the entry widget in the cell and set its current text to the cell's value
-            entry = tk.Entry(ip_tree)
-            entry.place(x=x, y=y, width=width, height=height, anchor='nw')
-
-            def save_edit(event):
-                new_value = entry.get()
-                # Validation for IP address format if it's the IP column
-                if column == "#1" and not is_valid_ip(new_value):
-                    messagebox.showerror("Error", "Invalid IP Address format.")
-                    entry.destroy()
-                    return
-                ip_tree.set(item, column=column, value=new_value)  # Update the Treeview item
-                entry.destroy()  # Remove the entry widget
-
-            entry.insert(0, ip_tree.item(item, 'values')[int(column[1:]) - 1])  # Pre-fill entry with current value
-            entry.select_range(0, tk.END)  # Select the text
-            entry.focus()  # Set focus on the entry widget
-            entry.bind('<Return>', save_edit)  # Save the edit on Enter key
-            entry.bind('<FocusOut>', lambda e: entry.destroy())  # Destroy entry if focus is lost
-
-    # Treeview for displaying IPs, hostnames, status, and response time
-    ip_tree = ttk.Treeview(window, columns=("IP", "Hostname", "Status", "Response Time"), show="headings", height=10)
-    ip_tree.grid(row=row, column=0, columnspan=5, sticky="nsew")
-    ip_tree.heading("IP", text="IP Address")
-    ip_tree.heading("Hostname", text="Hostname")
-    ip_tree.heading("Status", text="Status")
-    ip_tree.heading("Response Time", text="Response Time")
-    ip_tree.column("IP", width=100)
-    ip_tree.column("Hostname", width=100)
-    ip_tree.column("Status", width=80)
-    ip_tree.column("Response Time", width=120)
-    ip_tree.bind('<Double-1>', edit_tree_item)
 
     # Function to update the status and response time for all IPs
     def ping_all_ips():
@@ -644,56 +538,126 @@ def create_ip_updater():
             return
         ip_tree.delete(selected_item)
 
+    interface_var = ctk.StringVar(window)
+    interfaces_cache = []  # Cache interfaces to avoid re-fetching
+
+    # Interface dropdown
+    ctk.CTkLabel(window, text="Select Interface:").grid(row=row, column=0, sticky='e')
+    interface_dropdown = ctk.CTkComboBox(window, variable=interface_var, state="readonly")
+    interface_dropdown.grid(row=row, column=1, columnspan=3, sticky="ew")
+
+    # Refresh button
+    refresh_button = ctk.CTkButton(window, text="Refresh", width=7, command=lambda: refresh_interfaces(interface_dropdown, interface_var, interfaces_cache))
+    refresh_button.grid(row=row, column=4)
+
+    dhcp_button = ctk.CTkButton(window, text="DHCP", width=7, command=lambda: enable_dhcp(interface_var, ip_current, subnet_current, gateway_current, interfaces_cache))
+    dhcp_button.grid(row=row, column=5)
+
     # ------- NEXT ROW ----------
     row += 1
 
-    # Button for continuous ping
-    ping_control_button = tk.Button(window, text="Start Multiping")
-    ping_control_button.grid(row=row, column=0, sticky="ew")
-    
+    # Headers
+    ctk.CTkLabel(window, text="IP Address:").grid(row=row, column=1)
+    ctk.CTkLabel(window, text="Subnet Mask:").grid(row=row, column=3)
+    ctk.CTkLabel(window, text="Gateway:").grid(row=row, column=4)
+
+    # ------- NEXT ROW ----------
+    row += 1
+
+    # Current IP and Subnet display
+    ctk.CTkLabel(window, text="Current IP Address:").grid(row=row, column=0, sticky='e')
+    ip_current = ctk.CTkEntry(window, state='readonly')
+    ip_current.grid(row=row, column=1)
+    subnet_current = ctk.CTkEntry(window, state='readonly')
+    subnet_current.grid(row=row, column=3)
+    gateway_current = ctk.CTkEntry(window, state='readonly')
+    gateway_current.grid(row=row, column=4)
+
+    # ------- NEXT ROW ----------
+    row += 1
+
+    # Trace changes in the interface_var
+    interface_var.trace_add("write", lambda *args: update_display(interface_var, ip_current, subnet_current, gateway_current, interfaces_cache))
+
+    # Initial population of interfaces
+    refresh_interfaces(interface_dropdown, interface_var, interfaces_cache)
+
+    rows = 5
+    ip_entry = {}
+    subnet_entry = {}
+    gateway_entry = {}
+    set_ip_button = {}
+    for i in range(rows):
+        ctk.CTkLabel(window, text=f"IP Number {i+1}: ").grid(row=row, column=0, sticky='e')
+        ip_entry[i] = ctk.CTkEntry(window, placeholder_text = f"IP Number {i+1}: ")
+        ip_entry[i].grid(row=row, column=1)
+        subnet_entry[i] = ctk.CTkEntry(window)
+        subnet_entry[i].grid(row=row, column=3)
+        subnet_entry[i].insert(0, "255.255.255.0")
+        gateway_entry[i] = ctk.CTkEntry(window)
+        gateway_entry[i].grid(row=row, column=4)
+        # Set IP Button
+        set_ip_button[i] = ctk.CTkButton(window, text="Set IP", width=7,
+                                         command=lambda j=i: change_ip(interface_var, ip_entry, subnet_entry, gateway_entry, ip_tree, ping_interval_entry, j, ip_current, subnet_current, gateway_current, interfaces_cache))
+        set_ip_button[i].grid(row=row, column=5, padx=3)
+        row += 1
+
+    # ------- NEXT ROW ----------
+    row += 1
+
+    # Treeview for displaying IPs, hostnames, status, and response time
+    ip_tree = ttk.Treeview(window, columns=("IP", "Hostname", "Status", "Response Time"), show="headings", height=10)
+    ip_tree.grid(row=row, column=0, columnspan=5, sticky="nsew")
+    ip_tree.heading("IP", text="IP Address")
+    ip_tree.heading("Hostname", text="Hostname")
+    ip_tree.heading("Status", text="Status")
+    ip_tree.heading("Response Time", text="Response Time")
+    ip_tree.column("IP", width=100)
+    ip_tree.column("Hostname", width=100)
+    ip_tree.column("Status", width=80)
+    ip_tree.column("Response Time", width=120)
+
+    # ------- NEXT ROW ----------
+    row += 1
+
     # Buttons for actions
-    ping_button = tk.Button(window, text="MonoPing Selected", command=update_status)
+    ping_control_button = ctk.CTkButton(window, text="Start Multiping")
+    ping_control_button.grid(row=row, column=0, sticky="ew")
+
+    ping_button = ctk.CTkButton(window, text="MonoPing Selected", command=update_status)
     ping_button.grid(row=row, column=1, sticky="ew")
 
-    # Button to ping all IPs
-    ping_all_button = tk.Button(window, text="MonoPing All", command=ping_all_ips)
+    ping_all_button = ctk.CTkButton(window, text="MonoPing All", command=ping_all_ips)
     ping_all_button.grid(row=row, column=3, sticky="ew")
-    
-    # Import button
-    import_button = tk.Button(window, text="Import IP List", command=lambda: import_ip_file(ip_tree))
-    import_button.grid(row=row, column=4, sticky="ew")
 
+    import_button = ctk.CTkButton(window, text="Import IP List", command=lambda: import_ip_file(ip_tree))
+    import_button.grid(row=row, column=4, sticky="ew")
 
     # ------- NEXT ROW ----------
     row += 1
 
-    # Button to add a new IP
-    add_ip_button = tk.Button(window, text="Add New IP", command=lambda: add_new_ip(window, ip_tree))
+    add_ip_button = ctk.CTkButton(window, text="Add New IP", command=lambda: add_new_ip(window, ip_tree))
     add_ip_button.grid(row=row, column=0, sticky="ew")
 
-    # Button to delete a selected IP
-    delete_button = tk.Button(window, text="Delete Selected IP", command=lambda: delete_selected_ip())
+    delete_button = ctk.CTkButton(window, text="Delete Selected IP", command=lambda: delete_selected_ip())
     delete_button.grid(row=row, column=1, sticky="ew")
 
-    open_button = tk.Button(window, text="Open Selected in Browser", command=open_ip_in_browser)
+    open_button = ctk.CTkButton(window, text="Open Selected in Browser", command=open_ip_in_browser)
     open_button.grid(row=row, column=3, sticky="ew")
 
-    # Button to export IP and Hostname to CSV
-    export_csv_button = tk.Button(window, text="Export IP List", command=lambda: export_ips_to_csv(ip_tree))
+    export_csv_button = ctk.CTkButton(window, text="Export IP List", command=lambda: export_ips_to_csv(ip_tree))
     export_csv_button.grid(row=row, column=4, sticky="ew")
 
     # ------- NEXT ROW ----------
     row += 1
 
-
-    tk.Label(window, text="Ping Interval (s):").grid(row=row, column=0, sticky='e')
-    ping_interval_entry = tk.Entry(window)
+    ctk.CTkLabel(window, text="Ping Interval (s):").grid(row=row, column=0, sticky='e')
+    ping_interval_entry = ctk.CTkEntry(window)
     ping_interval_entry.insert(0, "10")  # Default interval
     ping_interval_entry.grid(row=row, column=1)
 
-    # Setting up control for continuous ping
-    is_running = [False]  # Using list to maintain reference
-    ping_thread = [None]  # Using list to keep thread reference
+    is_running = [False]
+    ping_thread = [None]
 
     def toggle_pinging():
         """Toggle the continuous pinging process."""
@@ -704,44 +668,24 @@ def create_ip_updater():
                 ping_thread[0].join()
         else:
             try:
-                # Ensure at least 1 second interval and no more than 99 seconds
                 ping_interval = int(ping_interval_entry.get())
                 if ping_interval < 1 or ping_interval > 99:
                     raise ValueError("Ping interval must be between 1 and 99 seconds.")
             except ValueError as e:
                 messagebox.showerror("Error", str(e))
                 return
-            
             is_running[0] = True
-            ping_interval = max(1, int(ping_interval_entry.get()))  # Ensure at least 1 second interval
             ping_thread[0] = Thread(target=continuous_ping, args=(ip_tree, ping_interval, is_running))
             ping_thread[0].start()
             ping_control_button.config(text="Stop Pinging")
 
-    ping_control_button.config(command=toggle_pinging)
+    
 
-    # FILE MENU
-    file_menu = tk.Menu(menu_bar, tearoff=0)
-    file_menu.add_command(label="Import Project", command=lambda: import_project(ip_entry, subnet_entry, gateway_entry, ip_tree, ping_interval_entry, False))
-    file_menu.add_command(label="Export Project", command=lambda: export_project(ip_entry, subnet_entry, gateway_entry, ip_tree, ping_interval_entry, False))
-    #file_menu.add_command(label="Open result directory", command=open_temp_folder)
-    file_menu.add_separator()
-    #file_menu.add_command(label="Help", command=open_help_page)
-    #file_menu.add_separator()
-    file_menu.add_command(label="Exit", command=close_application)
-    menu_bar.add_cascade(label="File", menu=file_menu)
-
-    # HELP MENU
-    help_menu = tk.Menu(menu_bar, tearoff=0)
-    help_menu.add_command(label="Help", command=open_help_page)
-    help_menu.add_separator()
-    help_menu.add_command(label="About", command=show_about_info)
-    menu_bar.add_cascade(label="Help", menu=help_menu)
-
-    import_project(ip_entry, subnet_entry, gateway_entry, ip_tree, ping_interval_entry, True)
+    ping_control_button.configure(command=toggle_pinging)
 
     window.mainloop()
 
 if __name__ == "__main__":
     get_projects_folder()
     create_ip_updater()
+
