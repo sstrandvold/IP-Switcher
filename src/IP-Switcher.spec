@@ -1,11 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+from PyInstaller.utils.hooks import collect_data_files
+
+icon_file = os.path.abspath('icon3.ico')
 
 a = Analysis(
-    ['IP-Switcher_Source_Code_4.3.1.py'],
+    ['IP-Switcher_Source_Code_4.4.0.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=collect_data_files('customtkinter') + [(icon_file, '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -21,7 +25,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='IP Switcher 4.3.1',
+    name='IP Switcher 4.4.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -36,5 +40,5 @@ exe = EXE(
     entitlements_file=None,
     uac_admin=True,
     manifest='IP-Switcher.manifest',
-	icon='icon3.ico'
+    icon=icon_file
 )

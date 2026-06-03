@@ -1,3 +1,5 @@
-Compile with Pyinstaller
+Compile with PyInstaller:
 
-<pyinstaller IP-Switcher.spec>
+```powershell
+pyinstaller IP-Switcher.spec
+```

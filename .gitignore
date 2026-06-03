@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+src/build/
+src/dist/
+install_file_script/installer_files/
