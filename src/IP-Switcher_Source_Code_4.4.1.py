@@ -10,7 +10,7 @@ import customtkinter as ctk
 
 
 APP_NAME = "IP Switcher"
-APP_VERSION = "4.4.0"
+APP_VERSION = "4.4.1"
 ORG_NAME = "Trafsys AS"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 

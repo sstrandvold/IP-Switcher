@@ -2,11 +2,11 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "IP Switcher"
-#define MyAppVersion "4.4.0"
+#define MyAppVersion "4.4.1"
 #define MyAppPublisher "Trafsys AS"
 #define MyAppURL "https://www.trafsys.no/"
-#define MyAppExeName "IP Switcher 4.4.0.exe"
-#define ProjectsFolderName "IP Switcher Projects"
+#define MyAppExeName "IP Switcher 4.4.1.exe"
+#define MyAppBuildDir "IP Switcher 4.4.1"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -20,6 +20,14 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\Trafsys\IP Switcher
+DefaultGroupName={#MyAppName}
+UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=..\src\icon3.ico
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Installer
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#MyAppVersion}
 ; "ArchitecturesAllowed=x64compatible" specifies that Setup cannot run
 ; on anything but x64 and Windows 11 on Arm.
 ArchitecturesAllowed=x64compatible
@@ -31,8 +39,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
 InfoBeforeFile=IP_Switcher_Pre_Installation_Info.txt
 InfoAfterFile=IP_Switcher_Post_Installation_Info.txt
-; Uncomment the following line to run in non administrative install mode (install for current user only.)
-;PrivilegesRequired=lowest
+PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=installer_files
 OutputBaseFilename={#MyAppName}-{#MyAppVersion}-Installer-x64
@@ -47,15 +54,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}";
 
 [Files]
-Source: "..\src\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\src\dist\{#MyAppBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\src\icon3.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
+
+[Dirs]
+Name: "{userappdata}\{#MyAppName}"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "cmd.exe"; Parameters: "/C mkdir ""{userappdata}\{#MyAppName}\{#ProjectsFolderName}"""; Flags: runhidden
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
