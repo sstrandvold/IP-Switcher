@@ -58,6 +58,11 @@ Source: "..\src\dist\{#MyAppBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\src\icon3.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
+[InstallDelete]
+Type: files; Name: "{app}\IP Switcher 4.3.exe"
+Type: files; Name: "{app}\IP Switcher 4.3.1.exe"
+Type: files; Name: "{app}\IP Switcher 4.4.0.exe"
+
 [Dirs]
 Name: "{userappdata}\{#MyAppName}"
 
