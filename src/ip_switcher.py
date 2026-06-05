@@ -1,3 +1,4 @@
+import ctypes
 import ipaddress
 import json
 import os
@@ -13,9 +14,16 @@ import customtkinter as ctk
 
 
 APP_NAME = "IP Switcher"
-APP_VERSION = "4.5.1"
 ORG_NAME = "Trafsys AS"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+DARK_BORDER_COLOR = 0x00221B15
+DARK_CAPTION_COLOR = 0x00221B15
+LIGHT_TEXT_COLOR = 0x00FCFAF7
 
 
 def app_data_dir():
@@ -50,6 +58,49 @@ def resource_path(filename):
         if os.path.exists(candidate):
             return candidate
     return candidates[0]
+
+
+def read_app_version():
+    try:
+        with open(resource_path("VERSION"), "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return "development"
+
+
+APP_VERSION = read_app_version()
+
+
+def apply_dark_window_frame(window):
+    if not sys.platform.startswith("win"):
+        return
+
+    try:
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        enabled = ctypes.c_int(1)
+        for attribute in (DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD):
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                ctypes.byref(enabled),
+                ctypes.sizeof(enabled),
+            )
+
+        for attribute, color in (
+            (DWMWA_BORDER_COLOR, DARK_BORDER_COLOR),
+            (DWMWA_CAPTION_COLOR, DARK_CAPTION_COLOR),
+            (DWMWA_TEXT_COLOR, LIGHT_TEXT_COLOR),
+        ):
+            color_value = ctypes.c_int(color)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                ctypes.byref(color_value),
+                ctypes.sizeof(color_value),
+            )
+    except (AttributeError, OSError, tk.TclError):
+        pass
 
 
 def run_hidden(args, check=False):
@@ -437,8 +488,8 @@ class IPSwitcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} {APP_VERSION}")
-        self.geometry("980x680")
-        self.minsize(880, 600)
+        self.geometry("1040x760")
+        self.minsize(940, 700)
 
         self.interfaces = []
         self.interface_buttons = {}
@@ -459,6 +510,7 @@ class IPSwitcherApp(ctk.CTk):
         self.build_menu()
         self.build_layout()
         self.protocol("WM_DELETE_WINDOW", self.close)
+        self.after(50, lambda: apply_dark_window_frame(self))
 
         self.update_preset_menu()
         self.after(100, self.refresh_interfaces)
@@ -470,22 +522,60 @@ class IPSwitcherApp(ctk.CTk):
             pass
 
     def build_menu(self):
-        menu_bar = tk.Menu(self)
-        file_menu = tk.Menu(menu_bar, tearoff=False)
-        file_menu.add_command(label="Import presets...", command=self.import_presets_from_file)
-        file_menu.add_command(label="Export presets...", command=self.export_presets_to_file)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.close)
-        menu_bar.add_cascade(label="File", menu=file_menu)
+        self.menu_items = {
+            "File": [
+                ("Import presets...", self.import_presets_from_file),
+                ("Export presets...", self.export_presets_to_file),
+                None,
+                ("Exit", self.close),
+            ],
+            "Tools": [
+                ("MTPuTTY XML generator...", self.open_mtputty_generator),
+            ],
+            "Help": [
+                ("About", self.show_about),
+            ],
+        }
 
-        tools_menu = tk.Menu(menu_bar, tearoff=False)
-        tools_menu.add_command(label="MTPuTTY XML generator...", command=self.open_mtputty_generator)
-        menu_bar.add_cascade(label="Tools", menu=tools_menu)
+    def build_header_menu(self, parent):
+        for column, (label, items) in enumerate(self.menu_items.items()):
+            button = ctk.CTkButton(
+                parent,
+                text=label,
+                width=74,
+                height=34,
+                fg_color="#182029",
+                hover_color="#2f3b46",
+                text_color="#d8e0e7",
+                border_width=1,
+                border_color="#34414d",
+            )
+            button.grid(row=0, column=column, padx=(0, 8))
+            button.configure(command=lambda target=button, menu_items=items: self.show_popup_menu(target, menu_items))
 
-        help_menu = tk.Menu(menu_bar, tearoff=False)
-        help_menu.add_command(label="About", command=self.show_about)
-        menu_bar.add_cascade(label="Help", menu=help_menu)
-        self.config(menu=menu_bar)
+    def show_popup_menu(self, anchor, items):
+        menu = tk.Menu(
+            self,
+            tearoff=False,
+            bg="#182029",
+            fg="#f7fafc",
+            activebackground="#1f6f8b",
+            activeforeground="#ffffff",
+            disabledforeground="#6f7e8c",
+            borderwidth=0,
+            relief="flat",
+        )
+        for item in items:
+            if item is None:
+                menu.add_separator()
+                continue
+            label, command = item
+            menu.add_command(label=label, command=command)
+
+        try:
+            menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height() + 4)
+        finally:
+            menu.grab_release()
 
     def build_layout(self):
         self.grid_columnconfigure(0, minsize=305)
@@ -495,6 +585,8 @@ class IPSwitcherApp(ctk.CTk):
         header = ctk.CTkFrame(self, fg_color="#151b22", corner_radius=0)
         header.grid(row=0, column=0, columnspan=2, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=0)
+        header.grid_columnconfigure(2, weight=0)
 
         title_block = ctk.CTkFrame(header, fg_color="transparent")
         title_block.grid(row=0, column=0, sticky="w", padx=22, pady=16)
@@ -511,6 +603,10 @@ class IPSwitcherApp(ctk.CTk):
             text_color="#9aa8b6",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
+        menu_frame = ctk.CTkFrame(header, fg_color="transparent")
+        menu_frame.grid(row=0, column=1, padx=(12, 0), pady=16)
+        self.build_header_menu(menu_frame)
+
         ctk.CTkButton(
             header,
             text="Refresh",
@@ -518,7 +614,7 @@ class IPSwitcherApp(ctk.CTk):
             command=self.refresh_interfaces,
             fg_color="#1f6f8b",
             hover_color="#2382a4",
-        ).grid(row=0, column=1, padx=22, pady=16)
+        ).grid(row=0, column=2, padx=22, pady=16)
 
         sidebar = ctk.CTkFrame(self, fg_color="#151b22", corner_radius=0)
         sidebar.grid(row=1, column=0, sticky="nsew")
@@ -542,9 +638,9 @@ class IPSwitcherApp(ctk.CTk):
         self.interface_list.grid_columnconfigure(0, weight=1)
 
         main = ctk.CTkFrame(self, fg_color="#101418", corner_radius=0)
-        main.grid(row=1, column=1, sticky="nsew", padx=22, pady=22)
+        main.grid(row=1, column=1, sticky="nsew", padx=22, pady=18)
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(3, weight=1)
+        main.grid_rowconfigure(3, weight=1, minsize=14)
 
         self.current_panel = ctk.CTkFrame(main, fg_color="#182029", corner_radius=8)
         self.current_panel.grid(row=0, column=0, sticky="ew")
@@ -561,13 +657,17 @@ class IPSwitcherApp(ctk.CTk):
         preset_panel.grid_columnconfigure(0, weight=1)
         self.build_preset_panel(preset_panel)
 
+        status_bar = ctk.CTkFrame(main, fg_color="#151b22", corner_radius=8)
+        status_bar.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        status_bar.grid_columnconfigure(0, weight=1)
+
         self.status_label = ctk.CTkLabel(
-            main,
+            status_bar,
             textvariable=self.status_var,
             anchor="w",
             text_color="#9aa8b6",
         )
-        self.status_label.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        self.status_label.grid(row=0, column=0, sticky="ew", padx=12, pady=8)
 
     def build_current_panel(self):
         ctk.CTkLabel(
@@ -712,13 +812,14 @@ class IPSwitcherApp(ctk.CTk):
         window = ctk.CTkToplevel(self)
         self.mtputty_window = window
         window.title("MTPuTTY XML Generator")
-        window.geometry("760x760")
-        window.minsize(680, 650)
+        window.geometry("820x820")
+        window.minsize(740, 720)
         window.transient(self)
         window.configure(fg_color="#101418")
         window.grid_columnconfigure(0, weight=1)
-        window.grid_rowconfigure(2, weight=1)
-        window.grid_rowconfigure(4, weight=1)
+        window.grid_rowconfigure(2, weight=1, minsize=210)
+        window.grid_rowconfigure(4, weight=2, minsize=300)
+        window.after(50, lambda: apply_dark_window_frame(window))
 
         selected_files = []
         username_var = tk.StringVar(value="admin")
@@ -762,7 +863,7 @@ class IPSwitcherApp(ctk.CTk):
 
         file_list = ctk.CTkScrollableFrame(
             file_panel,
-            height=150,
+            height=130,
             fg_color="#101418",
             corner_radius=8,
             border_width=1,
@@ -952,7 +1053,7 @@ class IPSwitcherApp(ctk.CTk):
         )
         custom_text = ctk.CTkTextbox(
             command_panel,
-            height=90,
+            height=150,
             fg_color="#101418",
             border_width=1,
             border_color="#34414d",

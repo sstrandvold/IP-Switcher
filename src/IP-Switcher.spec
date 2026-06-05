@@ -5,12 +5,13 @@ from PyInstaller.utils.hooks import collect_data_files
 
 icon_file = os.path.abspath('icon3.ico')
 version_file = os.path.abspath('file_version_info.txt')
+app_version_file = os.path.abspath('VERSION')
 
 a = Analysis(
-    ['IP-Switcher_Source_Code_4.5.1.py'],
+    ['ip_switcher.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('customtkinter') + [(icon_file, '.')],
+    datas=collect_data_files('customtkinter') + [(icon_file, '.'), (app_version_file, '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -24,7 +25,7 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    name='IP Switcher 4.5.1',
+    name='IP Switcher 4.5.2',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -51,5 +52,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='IP Switcher 4.5.1',
+    name='IP Switcher 4.5.2',
 )
