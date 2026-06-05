@@ -4,13 +4,16 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+import uuid
+import xml.dom.minidom as minidom
+import xml.etree.ElementTree as ET
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
 
 APP_NAME = "IP Switcher"
-APP_VERSION = "4.4.1"
+APP_VERSION = "4.5.0"
 ORG_NAME = "Trafsys AS"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -28,6 +31,13 @@ def app_data_dir():
 APP_DATA_DIR = app_data_dir()
 PRESETS_FILE = os.path.join(APP_DATA_DIR, "presets.json")
 OLD_AUTOSAVE_FILE = os.path.join(APP_DATA_DIR, "IP Switcher Projects", "autosave.json")
+MTPUTTY_PASSWORD_TOKEN = "peziKED81ZUhG8W1I57eIr+AawG6+rvG"
+MTPUTTY_COMMAND_OPTIONS = [
+    ("Enable", "enable"),
+    ("Configure terminal", "conf term"),
+    ("Terminal length 0", "terminal length 0"),
+    ("Show running config", "show running-config"),
+]
 
 
 def resource_path(filename):
@@ -294,6 +304,68 @@ def import_presets(path):
     raise ValueError("The selected file does not contain IP Switcher presets.")
 
 
+def parse_multiping_file(file_path):
+    entries = []
+    with open(file_path, "r", encoding="utf-8-sig") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split(maxsplit=1)
+            ip = validate_ipv4(parts[0], f"Line {line_number} IP address")
+            name = parts[1].strip() if len(parts) > 1 else ""
+            entries.append({"ip": ip, "name": name})
+
+    if not entries:
+        raise ValueError("The selected file does not contain any IP entries.")
+    return entries
+
+
+def mtputty_display_name(entry):
+    return f"{entry['ip']} {entry['name']}".strip()
+
+
+def build_mtputty_tree(entries, folder_name, username, port, commands):
+    servers = ET.Element("Servers")
+    putty = ET.SubElement(servers, "Putty")
+    folder = ET.SubElement(putty, "Node", {"Type": "0", "Expanded": "1"})
+    ET.SubElement(folder, "DisplayName").text = folder_name
+
+    for entry in entries:
+        ip = entry["ip"]
+        node = ET.SubElement(folder, "Node", {"Type": "1"})
+        ET.SubElement(node, "SavedSession").text = "Default Settings"
+        ET.SubElement(node, "DisplayName").text = mtputty_display_name(entry)
+        ET.SubElement(node, "UID").text = str(uuid.uuid4())
+        ET.SubElement(node, "ServerName").text = ip
+        ET.SubElement(node, "PuttyConType").text = "4"
+        ET.SubElement(node, "Port").text = str(port)
+        ET.SubElement(node, "UserName").text = username
+        ET.SubElement(node, "Password").text = MTPUTTY_PASSWORD_TOKEN
+        ET.SubElement(node, "PasswordDelay").text = "10"
+        ET.SubElement(node, "CLParams").text = f"{ip} -ssh -P {port} -l {username} -pw *****"
+        ET.SubElement(node, "ScriptDelay").text = "50"
+        script_node = ET.SubElement(node, "Script")
+        for index, command in enumerate(commands):
+            ET.SubElement(script_node, f"L{index}").text = command
+
+    return servers
+
+
+def pretty_xml_bytes(root):
+    rough_xml = ET.tostring(root, "utf-8")
+    return minidom.parseString(rough_xml).toprettyxml(indent="\t", encoding="UTF-8")
+
+
+def export_mtputty_xml(input_path, output_path, folder_name, username, port, commands):
+    entries = parse_multiping_file(input_path)
+    root = build_mtputty_tree(entries, folder_name, username, port, commands)
+    with open(output_path, "wb") as handle:
+        handle.write(pretty_xml_bytes(root))
+    return len(entries)
+
+
 class IPSwitcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -311,6 +383,7 @@ class IPSwitcherApp(ctk.CTk):
         self.gateway_var = tk.StringVar()
         self.preset_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
+        self.mtputty_window = None
 
         self.current_values = {}
 
@@ -337,6 +410,10 @@ class IPSwitcherApp(ctk.CTk):
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.close)
         menu_bar.add_cascade(label="File", menu=file_menu)
+
+        tools_menu = tk.Menu(menu_bar, tearoff=False)
+        tools_menu.add_command(label="MTPuTTY XML generator...", command=self.open_mtputty_generator)
+        menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         help_menu = tk.Menu(menu_bar, tearoff=False)
         help_menu.add_command(label="About", command=self.show_about)
@@ -559,6 +636,220 @@ class IPSwitcherApp(ctk.CTk):
                 fg_color=color,
                 hover_color=hover,
             ).grid(row=0, column=index, padx=(0, 8 if index < len(buttons) else 0))
+
+    def open_mtputty_generator(self):
+        if self.mtputty_window and self.mtputty_window.winfo_exists():
+            self.mtputty_window.focus()
+            return
+
+        window = ctk.CTkToplevel(self)
+        self.mtputty_window = window
+        window.title("MTPuTTY XML Generator")
+        window.geometry("650x640")
+        window.minsize(590, 560)
+        window.transient(self)
+        window.configure(fg_color="#101418")
+        window.grid_columnconfigure(0, weight=1)
+
+        file_path_var = tk.StringVar()
+        folder_name_var = tk.StringVar()
+        username_var = tk.StringVar(value="admin")
+        port_var = tk.StringVar(value="22")
+        status_var = tk.StringVar(value="Choose a multiping text file.")
+        command_vars = {}
+
+        ctk.CTkLabel(
+            window,
+            text="MTPuTTY XML Generator",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color="#f7fafc",
+        ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 4))
+
+        ctk.CTkLabel(
+            window,
+            text="Build an importable MTPuTTY tree from a text file with one IP and optional name per line.",
+            text_color="#9aa8b6",
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 14))
+
+        file_panel = ctk.CTkFrame(window, fg_color="#182029", corner_radius=8)
+        file_panel.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
+        file_panel.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(file_panel, text="Multiping file", text_color="#9aa8b6").grid(
+            row=0, column=0, sticky="w", padx=14, pady=(12, 0)
+        )
+        file_entry = ctk.CTkEntry(
+            file_panel,
+            textvariable=file_path_var,
+            height=36,
+            border_width=1,
+            border_color="#34414d",
+            fg_color="#101418",
+        )
+        file_entry.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(6, 14))
+
+        def browse_multiping_file():
+            path = filedialog.askopenfilename(
+                title="Open multiping file",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                initialdir=APP_DATA_DIR,
+            )
+            if not path:
+                return
+            file_path_var.set(path)
+            folder_name_var.set(os.path.splitext(os.path.basename(path))[0])
+            try:
+                count = len(parse_multiping_file(path))
+                status_var.set(f"Loaded {count} host(s) from {os.path.basename(path)}.")
+            except ValueError as exc:
+                status_var.set(str(exc))
+
+        ctk.CTkButton(
+            file_panel,
+            text="Browse",
+            width=96,
+            command=browse_multiping_file,
+            fg_color="#1f6f8b",
+            hover_color="#2382a4",
+        ).grid(row=1, column=1, sticky="e", padx=(0, 14), pady=(6, 14))
+
+        config_panel = ctk.CTkFrame(window, fg_color="#182029", corner_radius=8)
+        config_panel.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
+        config_panel.grid_columnconfigure((0, 1, 2), weight=1)
+
+        folder_entry = self.dialog_entry_group(config_panel, "Tree folder name", folder_name_var, 0, 0)
+        username_entry = self.dialog_entry_group(config_panel, "Username", username_var, 0, 1)
+        port_entry = self.dialog_entry_group(config_panel, "SSH port", port_var, 0, 2)
+        for entry in (folder_entry, username_entry, port_entry):
+            entry.configure(height=36)
+
+        command_panel = ctk.CTkFrame(window, fg_color="#182029", corner_radius=8)
+        command_panel.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 12))
+        command_panel.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(4, weight=1)
+
+        ctk.CTkLabel(
+            command_panel,
+            text="Login commands",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#f7fafc",
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(14, 8))
+
+        for index, (label, command) in enumerate(MTPUTTY_COMMAND_OPTIONS, start=1):
+            var = tk.BooleanVar(value=command in {"enable", "conf term"})
+            command_vars[command] = var
+            ctk.CTkCheckBox(
+                command_panel,
+                text=f"{label}  ({command})",
+                variable=var,
+                text_color="#d8e0e7",
+                fg_color="#1f6f8b",
+                hover_color="#2382a4",
+            ).grid(row=index, column=0, sticky="w", padx=14, pady=3)
+
+        ctk.CTkLabel(command_panel, text="Custom commands", text_color="#9aa8b6").grid(
+            row=5, column=0, sticky="w", padx=14, pady=(12, 0)
+        )
+        custom_text = ctk.CTkTextbox(
+            command_panel,
+            height=90,
+            fg_color="#101418",
+            border_width=1,
+            border_color="#34414d",
+        )
+        custom_text.grid(row=6, column=0, sticky="nsew", padx=14, pady=(6, 14))
+        command_panel.grid_rowconfigure(6, weight=1)
+
+        footer = ctk.CTkFrame(window, fg_color="transparent")
+        footer.grid(row=5, column=0, sticky="ew", padx=20, pady=(0, 16))
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(footer, textvariable=status_var, text_color="#9aa8b6", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=(0, 12)
+        )
+
+        def selected_commands():
+            commands = [
+                command
+                for _label, command in MTPUTTY_COMMAND_OPTIONS
+                if command_vars[command].get()
+            ]
+            custom_commands = [
+                line.strip()
+                for line in custom_text.get("1.0", "end").splitlines()
+                if line.strip()
+            ]
+            return commands + custom_commands
+
+        def generate_xml_file():
+            input_path = file_path_var.get().strip()
+            if not input_path or not os.path.exists(input_path):
+                messagebox.showerror("Missing File", "Choose a valid multiping text file.", parent=window)
+                return
+
+            folder_name = folder_name_var.get().strip() or os.path.splitext(os.path.basename(input_path))[0]
+            username = username_var.get().strip()
+            if not username:
+                messagebox.showerror("Missing Username", "Enter an SSH username.", parent=window)
+                return
+
+            try:
+                port = int(port_var.get().strip())
+                if port < 1 or port > 65535:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid Port", "Enter a valid TCP port from 1 to 65535.", parent=window)
+                return
+
+            output_path = filedialog.asksaveasfilename(
+                title="Save MTPuTTY XML",
+                defaultextension=".xml",
+                filetypes=[("XML files", "*.xml"), ("All files", "*.*")],
+                initialdir=os.path.dirname(input_path),
+                initialfile=f"{folder_name}.xml",
+            )
+            if not output_path:
+                return
+
+            try:
+                count = export_mtputty_xml(
+                    input_path,
+                    output_path,
+                    folder_name,
+                    username,
+                    port,
+                    selected_commands(),
+                )
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Export Failed", str(exc), parent=window)
+                return
+
+            status_var.set(f"Exported {count} host(s) to {os.path.basename(output_path)}.")
+            messagebox.showinfo("Export Complete", f"Created MTPuTTY XML for {count} host(s).", parent=window)
+
+        ctk.CTkButton(
+            footer,
+            text="Generate XML",
+            width=140,
+            command=generate_xml_file,
+            fg_color="#2d8a66",
+            hover_color="#35a579",
+        ).grid(row=0, column=1, sticky="e")
+
+    def dialog_entry_group(self, parent, label, variable, row, column):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=row, column=column, sticky="ew", padx=14, pady=14)
+        frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(frame, text=label, text_color="#9aa8b6").grid(row=0, column=0, sticky="w")
+        entry = ctk.CTkEntry(
+            frame,
+            textvariable=variable,
+            border_width=1,
+            border_color="#34414d",
+            fg_color="#101418",
+        )
+        entry.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        return entry
 
     def refresh_interfaces(self):
         if not sys.platform.startswith("win"):

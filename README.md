@@ -2,7 +2,7 @@
 
 IP Switcher is a small Windows GUI for changing the IPv4 configuration of network interfaces.
 
-Version: 4.4.1
+Version: 4.5.0
 
 ## What It Does
 
@@ -11,6 +11,7 @@ Version: 4.4.1
 - Switches a selected interface back to DHCP.
 - Saves reusable IP presets named like `192.168.1.1/24` in `%APPDATA%\IP Switcher\presets.json`.
 - Imports and exports preset JSON files.
+- Generates importable MTPuTTY XML trees from `multiping.txt` files.
 
 Earlier network monitoring tools have been removed so the app stays focused on switching interface IP settings.
 
@@ -28,7 +29,7 @@ Then build from `src`:
 pyinstaller IP-Switcher.spec
 ```
 
-The build outputs a one-folder app at `src/dist/IP Switcher 4.4.1/`. The executable requests administrator privileges because changing interface IP settings requires elevation on Windows.
+The build outputs a one-folder app at `src/dist/IP Switcher 4.5.0/`. The executable requests administrator privileges because changing interface IP settings requires elevation on Windows.
 
 ## Installer and Signing
 
