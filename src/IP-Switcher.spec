@@ -7,7 +7,7 @@ icon_file = os.path.abspath('icon3.ico')
 version_file = os.path.abspath('file_version_info.txt')
 
 a = Analysis(
-    ['IP-Switcher_Source_Code_4.5.0.py'],
+    ['IP-Switcher_Source_Code_4.5.1.py'],
     pathex=[],
     binaries=[],
     datas=collect_data_files('customtkinter') + [(icon_file, '.')],
@@ -24,7 +24,7 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    name='IP Switcher 4.5.0',
+    name='IP Switcher 4.5.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -51,5 +51,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='IP Switcher 4.5.0',
+    name='IP Switcher 4.5.1',
 )

@@ -16,14 +16,14 @@ The real "official" step is Authenticode signing with a code-signing certificate
 After building, sign the executable and installer with `signtool.exe`:
 
 ```powershell
-signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a "src\dist\IP Switcher 4.5.0\IP Switcher 4.5.0.exe"
-signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a "install_file_script\installer_files\IP Switcher-4.5.0-Installer-x64.exe"
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a "src\dist\IP Switcher 4.5.1\IP Switcher 4.5.1.exe"
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a "install_file_script\installer_files\IP Switcher-4.5.1-Installer-x64.exe"
 ```
 
 If you have a specific certificate thumbprint:
 
 ```powershell
-signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 YOUR_CERT_THUMBPRINT "src\dist\IP Switcher 4.5.0\IP Switcher 4.5.0.exe"
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 YOUR_CERT_THUMBPRINT "src\dist\IP Switcher 4.5.1\IP Switcher 4.5.1.exe"
 ```
 
 Unsigned builds may still be flagged by Defender or SmartScreen. Signing and maintaining release reputation is the durable fix.

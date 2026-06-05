@@ -13,7 +13,7 @@ import customtkinter as ctk
 
 
 APP_NAME = "IP Switcher"
-APP_VERSION = "4.5.0"
+APP_VERSION = "4.5.1"
 ORG_NAME = "Trafsys AS"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -326,15 +326,17 @@ def mtputty_display_name(entry):
     return f"{entry['ip']} {entry['name']}".strip()
 
 
-def build_mtputty_tree(entries, folder_name, username, port, commands):
-    servers = ET.Element("Servers")
-    putty = ET.SubElement(servers, "Putty")
-    folder = ET.SubElement(putty, "Node", {"Type": "0", "Expanded": "1"})
-    ET.SubElement(folder, "DisplayName").text = folder_name
+def mtputty_category_name(file_path):
+    name = os.path.splitext(os.path.basename(file_path))[0].strip()
+    if name.lower().startswith("multiping "):
+        name = name[10:].strip()
+    return name or "Imported devices"
 
+
+def add_mtputty_hosts(parent, entries, username, port, commands):
     for entry in entries:
         ip = entry["ip"]
-        node = ET.SubElement(folder, "Node", {"Type": "1"})
+        node = ET.SubElement(parent, "Node", {"Type": "1"})
         ET.SubElement(node, "SavedSession").text = "Default Settings"
         ET.SubElement(node, "DisplayName").text = mtputty_display_name(entry)
         ET.SubElement(node, "UID").text = str(uuid.uuid4())
@@ -350,6 +352,28 @@ def build_mtputty_tree(entries, folder_name, username, port, commands):
         for index, command in enumerate(commands):
             ET.SubElement(script_node, f"L{index}").text = command
 
+
+def build_mtputty_tree(entries, folder_name, username, port, commands):
+    servers = ET.Element("Servers")
+    putty = ET.SubElement(servers, "Putty")
+    folder = ET.SubElement(putty, "Node", {"Type": "0", "Expanded": "1"})
+    ET.SubElement(folder, "DisplayName").text = folder_name
+    add_mtputty_hosts(folder, entries, username, port, commands)
+    return servers
+
+
+def build_mtputty_category_tree(categories, root_folder_name, username, port, commands):
+    if not categories:
+        raise ValueError("Add at least one multiping text file.")
+
+    servers = ET.Element("Servers")
+    putty = ET.SubElement(servers, "Putty")
+
+    for category in categories:
+        folder = ET.SubElement(putty, "Node", {"Type": "0", "Expanded": "1"})
+        ET.SubElement(folder, "DisplayName").text = category["name"]
+        add_mtputty_hosts(folder, category["entries"], username, port, commands)
+
     return servers
 
 
@@ -364,6 +388,49 @@ def export_mtputty_xml(input_path, output_path, folder_name, username, port, com
     with open(output_path, "wb") as handle:
         handle.write(pretty_xml_bytes(root))
     return len(entries)
+
+
+def export_mtputty_xml_files(input_paths, output_path, root_folder_name, username, port, commands):
+    if not input_paths:
+        raise ValueError("Add at least one multiping text file.")
+
+    unique_paths = []
+    seen = set()
+    for path in input_paths:
+        normalized = os.path.abspath(path)
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_paths.append(normalized)
+
+    if len(unique_paths) == 1:
+        path = unique_paths[0]
+        entries = parse_multiping_file(path)
+        folder_name = root_folder_name or mtputty_category_name(path)
+        root = build_mtputty_tree(entries, folder_name, username, port, commands)
+        count = len(entries)
+    else:
+        categories = []
+        count = 0
+        for path in unique_paths:
+            entries = parse_multiping_file(path)
+            categories.append(
+                {
+                    "name": mtputty_category_name(path),
+                    "entries": entries,
+                }
+            )
+            count += len(entries)
+        root = build_mtputty_category_tree(
+            categories,
+            root_folder_name,
+            username,
+            port,
+            commands,
+        )
+
+    with open(output_path, "wb") as handle:
+        handle.write(pretty_xml_bytes(root))
+    return count
 
 
 class IPSwitcherApp(ctk.CTk):
@@ -645,17 +712,18 @@ class IPSwitcherApp(ctk.CTk):
         window = ctk.CTkToplevel(self)
         self.mtputty_window = window
         window.title("MTPuTTY XML Generator")
-        window.geometry("650x640")
-        window.minsize(590, 560)
+        window.geometry("760x760")
+        window.minsize(680, 650)
         window.transient(self)
         window.configure(fg_color="#101418")
         window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(2, weight=1)
+        window.grid_rowconfigure(4, weight=1)
 
-        file_path_var = tk.StringVar()
-        folder_name_var = tk.StringVar()
+        selected_files = []
         username_var = tk.StringVar(value="admin")
         port_var = tk.StringVar(value="22")
-        status_var = tk.StringVar(value="Choose a multiping text file.")
+        status_var = tk.StringVar(value="Add one or more multiping text files.")
         command_vars = {}
 
         ctk.CTkLabel(
@@ -667,61 +735,192 @@ class IPSwitcherApp(ctk.CTk):
 
         ctk.CTkLabel(
             window,
-            text="Build an importable MTPuTTY tree from a text file with one IP and optional name per line.",
+            text="Build an importable MTPuTTY tree from one file, many files, or a folder of ring files.",
             text_color="#9aa8b6",
             anchor="w",
         ).grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 14))
 
         file_panel = ctk.CTkFrame(window, fg_color="#182029", corner_radius=8)
-        file_panel.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
+        file_panel.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 12))
         file_panel.grid_columnconfigure(0, weight=1)
+        file_panel.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(file_panel, text="Multiping file", text_color="#9aa8b6").grid(
-            row=0, column=0, sticky="w", padx=14, pady=(12, 0)
-        )
-        file_entry = ctk.CTkEntry(
+        ctk.CTkLabel(
             file_panel,
-            textvariable=file_path_var,
-            height=36,
+            text="Multiping sources",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#f7fafc",
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 0))
+        ctk.CTkLabel(
+            file_panel,
+            text="Each selected file becomes a category folder in the exported tree.",
+            text_color="#9aa8b6",
+        ).grid(row=1, column=0, sticky="w", padx=14, pady=(2, 8))
+
+        file_actions = ctk.CTkFrame(file_panel, fg_color="transparent")
+        file_actions.grid(row=0, column=1, rowspan=2, sticky="e", padx=14, pady=(12, 8))
+
+        file_list = ctk.CTkScrollableFrame(
+            file_panel,
+            height=150,
+            fg_color="#101418",
+            corner_radius=8,
             border_width=1,
             border_color="#34414d",
-            fg_color="#101418",
         )
-        file_entry.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(6, 14))
+        file_list.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=14, pady=(0, 14))
+        file_list.grid_columnconfigure(0, weight=1)
 
-        def browse_multiping_file():
-            path = filedialog.askopenfilename(
-                title="Open multiping file",
+        def remove_file(index):
+            if 0 <= index < len(selected_files):
+                selected_files.pop(index)
+            update_file_list()
+            summarize_files()
+
+        def update_file_list():
+            for child in file_list.winfo_children():
+                child.destroy()
+
+            if not selected_files:
+                ctk.CTkLabel(
+                    file_list,
+                    text="No files added yet.",
+                    text_color="#6f7e8c",
+                    anchor="w",
+                ).grid(row=0, column=0, sticky="ew", padx=12, pady=12)
+                return
+
+            for index, item in enumerate(selected_files):
+                row = ctk.CTkFrame(file_list, fg_color="#182029", corner_radius=6)
+                row.grid(row=index, column=0, sticky="ew", padx=8, pady=(8, 0))
+                row.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(
+                    row,
+                    text=f"{item['category']} ({item['count']} hosts)",
+                    text_color="#f7fafc",
+                    anchor="w",
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                ).grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 0))
+                ctk.CTkLabel(
+                    row,
+                    text=item["path"],
+                    text_color="#9aa8b6",
+                    anchor="w",
+                    wraplength=520,
+                ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+                ctk.CTkButton(
+                    row,
+                    text="Remove",
+                    width=76,
+                    height=28,
+                    command=lambda remove_index=index: remove_file(remove_index),
+                    fg_color="#70363b",
+                    hover_color="#8a4248",
+                ).grid(row=0, column=1, rowspan=2, padx=10, pady=8)
+
+        def summarize_files():
+            total_hosts = sum(item["count"] for item in selected_files)
+            if not selected_files:
+                status_var.set("Add one or more multiping text files.")
+            elif len(selected_files) == 1:
+                status_var.set(f"Ready: 1 category with {total_hosts} host(s).")
+            else:
+                status_var.set(f"Ready: {len(selected_files)} categories with {total_hosts} host(s).")
+
+        def add_multiping_paths(paths):
+            added = 0
+            errors = []
+            existing = {item["path"].lower() for item in selected_files}
+            for path in paths:
+                if not path:
+                    continue
+                normalized = os.path.abspath(path)
+                if normalized.lower() in existing:
+                    continue
+                try:
+                    entries = parse_multiping_file(normalized)
+                except (OSError, ValueError) as exc:
+                    errors.append(f"{os.path.basename(path)}: {exc}")
+                    continue
+
+                selected_files.append(
+                    {
+                        "path": normalized,
+                        "category": mtputty_category_name(normalized),
+                        "count": len(entries),
+                    }
+                )
+                existing.add(normalized.lower())
+                added += 1
+
+            update_file_list()
+            summarize_files()
+            if errors:
+                messagebox.showwarning("Some Files Were Skipped", "\n".join(errors[:8]), parent=window)
+
+        def browse_multiping_files():
+            paths = filedialog.askopenfilenames(
+                title="Open multiping files",
                 filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
                 initialdir=APP_DATA_DIR,
             )
-            if not path:
+            add_multiping_paths(paths)
+
+        def browse_multiping_folder():
+            folder = filedialog.askdirectory(
+                title="Open folder with multiping files",
+                initialdir=APP_DATA_DIR,
+            )
+            if not folder:
                 return
-            file_path_var.set(path)
-            folder_name_var.set(os.path.splitext(os.path.basename(path))[0])
-            try:
-                count = len(parse_multiping_file(path))
-                status_var.set(f"Loaded {count} host(s) from {os.path.basename(path)}.")
-            except ValueError as exc:
-                status_var.set(str(exc))
+            paths = [
+                os.path.join(folder, name)
+                for name in sorted(os.listdir(folder))
+                if name.lower().endswith(".txt")
+            ]
+            if not paths:
+                messagebox.showerror("No Text Files", "The selected folder does not contain any .txt files.", parent=window)
+                return
+            add_multiping_paths(paths)
+
+        def clear_files():
+            selected_files.clear()
+            update_file_list()
+            summarize_files()
 
         ctk.CTkButton(
-            file_panel,
-            text="Browse",
+            file_actions,
+            text="Add files",
             width=96,
-            command=browse_multiping_file,
+            command=browse_multiping_files,
             fg_color="#1f6f8b",
             hover_color="#2382a4",
-        ).grid(row=1, column=1, sticky="e", padx=(0, 14), pady=(6, 14))
+        ).grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkButton(
+            file_actions,
+            text="Add folder",
+            width=104,
+            command=browse_multiping_folder,
+            fg_color="#1f6f8b",
+            hover_color="#2382a4",
+        ).grid(row=0, column=1, padx=(0, 8))
+        ctk.CTkButton(
+            file_actions,
+            text="Clear",
+            width=72,
+            command=clear_files,
+            fg_color="#2f3b46",
+            hover_color="#3b4a57",
+        ).grid(row=0, column=2)
+        update_file_list()
 
         config_panel = ctk.CTkFrame(window, fg_color="#182029", corner_radius=8)
         config_panel.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
-        config_panel.grid_columnconfigure((0, 1, 2), weight=1)
+        config_panel.grid_columnconfigure((0, 1), weight=1)
 
-        folder_entry = self.dialog_entry_group(config_panel, "Tree folder name", folder_name_var, 0, 0)
-        username_entry = self.dialog_entry_group(config_panel, "Username", username_var, 0, 1)
-        port_entry = self.dialog_entry_group(config_panel, "SSH port", port_var, 0, 2)
-        for entry in (folder_entry, username_entry, port_entry):
+        username_entry = self.dialog_entry_group(config_panel, "Username", username_var, 0, 0)
+        port_entry = self.dialog_entry_group(config_panel, "SSH port", port_var, 0, 1)
+        for entry in (username_entry, port_entry):
             entry.configure(height=36)
 
         command_panel = ctk.CTkFrame(window, fg_color="#182029", corner_radius=8)
@@ -782,12 +981,10 @@ class IPSwitcherApp(ctk.CTk):
             return commands + custom_commands
 
         def generate_xml_file():
-            input_path = file_path_var.get().strip()
-            if not input_path or not os.path.exists(input_path):
-                messagebox.showerror("Missing File", "Choose a valid multiping text file.", parent=window)
+            if not selected_files:
+                messagebox.showerror("Missing Files", "Add at least one multiping text file.", parent=window)
                 return
 
-            folder_name = folder_name_var.get().strip() or os.path.splitext(os.path.basename(input_path))[0]
             username = username_var.get().strip()
             if not username:
                 messagebox.showerror("Missing Username", "Enter an SSH username.", parent=window)
@@ -805,17 +1002,17 @@ class IPSwitcherApp(ctk.CTk):
                 title="Save MTPuTTY XML",
                 defaultextension=".xml",
                 filetypes=[("XML files", "*.xml"), ("All files", "*.*")],
-                initialdir=os.path.dirname(input_path),
-                initialfile=f"{folder_name}.xml",
+                initialdir=os.path.dirname(selected_files[0]["path"]),
+                initialfile=f"{selected_files[0]['category'] if len(selected_files) == 1 else 'MTPuTTY'}.xml",
             )
             if not output_path:
                 return
 
             try:
-                count = export_mtputty_xml(
-                    input_path,
+                count = export_mtputty_xml_files(
+                    [item["path"] for item in selected_files],
                     output_path,
-                    folder_name,
+                    selected_files[0]["category"] if len(selected_files) == 1 else "",
                     username,
                     port,
                     selected_commands(),
@@ -824,7 +1021,8 @@ class IPSwitcherApp(ctk.CTk):
                 messagebox.showerror("Export Failed", str(exc), parent=window)
                 return
 
-            status_var.set(f"Exported {count} host(s) to {os.path.basename(output_path)}.")
+            category_text = "category" if len(selected_files) == 1 else "categories"
+            status_var.set(f"Exported {count} host(s) across {len(selected_files)} {category_text}.")
             messagebox.showinfo("Export Complete", f"Created MTPuTTY XML for {count} host(s).", parent=window)
 
         ctk.CTkButton(
