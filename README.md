@@ -12,6 +12,13 @@ Version: 4.5.2
 - Saves reusable IP presets named like `192.168.1.1/24` in `%APPDATA%\IP Switcher\presets.json`.
 - Imports and exports preset JSON files.
 - Generates importable MTPuTTY XML trees from `multiping.txt` files.
+- Configures SSH-capable IP phones from the Tools menu with DHCP staging,
+  static IP assignment, TFTP settings, ping, and SSH read-back verification.
+  Phone assignment history is written to `%APPDATA%\IP Switcher\phone-configurator-log.csv`
+  and can be viewed or opened from the phone configurator window. Phone tool
+  settings are saved in `%APPDATA%\IP Switcher\phone-configurator-settings.json`.
+  The phone tool can select the host network interface and set it to the DHCP
+  server IP automatically before starting the built-in DHCP server.
 
 Earlier network monitoring tools have been removed so the app stays focused on switching interface IP settings.
 

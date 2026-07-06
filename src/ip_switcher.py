@@ -1,16 +1,29 @@
 import ctypes
+import concurrent.futures
+import csv
+import dataclasses
 import ipaddress
 import json
 import os
+import queue
+import socket
+import struct
 import subprocess
 import sys
+import threading
 import tkinter as tk
+import time
 import uuid
 import xml.dom.minidom as minidom
 import xml.etree.ElementTree as ET
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
 
 APP_NAME = "IP Switcher"
@@ -45,6 +58,42 @@ MTPUTTY_COMMAND_OPTIONS = [
     ("Configure terminal", "conf term"),
     ("Terminal length 0", "terminal length 0"),
     ("Show running config", "show running-config"),
+]
+PHONE_CONFIG_STATE_FILE = os.path.join(APP_DATA_DIR, "phone-configurator-state.json")
+PHONE_CONFIG_LOG_FILE = os.path.join(APP_DATA_DIR, "phone-configurator-log.csv")
+PHONE_CONFIG_PENDING_LOG_FILE = os.path.join(APP_DATA_DIR, "phone-configurator-log-pending.csv")
+PHONE_CONFIG_SETTINGS_FILE = os.path.join(APP_DATA_DIR, "phone-configurator-settings.json")
+PHONE_CONFIG_DEFAULTS = {
+    "staging_interface": "",
+    "scan_subnet": "10.32.139.0/24",
+    "target_start": "10.32.139.175",
+    "target_end": "10.32.139.184",
+    "netmask": "255.255.255.0",
+    "gateway": "10.32.139.254",
+    "tftp_server": "10.32.139.150",
+    "ssh_username": "root",
+    "ssh_password": "n0cerr1er",
+    "ssh_port": "22",
+    "dhcp_server_ip": "10.32.139.5",
+    "dhcp_pool_start": "10.32.139.21",
+    "dhcp_pool_end": "10.32.139.50",
+    "dhcp_lease_seconds": "600",
+    "dhcp_wait_seconds": "180",
+    "dhcp_ssh_probe_seconds": "30",
+    "ping_timeout_seconds": "180",
+    "ping_interval_seconds": "2",
+}
+PHONE_CONFIG_SETTING_KEYS = list(PHONE_CONFIG_DEFAULTS.keys()) + ["use_dhcp_server"]
+PHONE_CONFIG_LOG_FIELDS = [
+    "timestamp",
+    "mac",
+    "dhcp_ip",
+    "target_ip",
+    "netmask",
+    "gateway",
+    "tftp_server",
+    "status",
+    "message",
 ]
 
 
@@ -484,6 +533,785 @@ def export_mtputty_xml_files(input_paths, output_path, root_folder_name, usernam
     return count
 
 
+@dataclasses.dataclass(frozen=True)
+class PhoneConfig:
+    staging_interface: str
+    scan_subnet: ipaddress.IPv4Network
+    target_start: ipaddress.IPv4Address
+    target_end: ipaddress.IPv4Address
+    netmask: str
+    gateway: str
+    tftp_server: str
+    ssh_username: str
+    ssh_password: str
+    ssh_port: int
+    dhcp_server_ip: ipaddress.IPv4Address
+    dhcp_pool_start: ipaddress.IPv4Address
+    dhcp_pool_end: ipaddress.IPv4Address
+    dhcp_lease_seconds: int
+    dhcp_wait_seconds: int
+    dhcp_ssh_probe_seconds: int
+    ping_timeout_seconds: int
+    ping_interval_seconds: int
+    use_dhcp_server: bool
+
+    @classmethod
+    def from_values(cls, values):
+        config = cls(
+            staging_interface=values["staging_interface"].strip(),
+            scan_subnet=ipaddress.ip_network(values["scan_subnet"].strip(), strict=False),
+            target_start=ipaddress.ip_address(values["target_start"].strip()),
+            target_end=ipaddress.ip_address(values["target_end"].strip()),
+            netmask=validate_subnet_mask(values["netmask"].strip()),
+            gateway=validate_ipv4(values["gateway"].strip(), "Gateway"),
+            tftp_server=validate_ipv4(values["tftp_server"].strip(), "TFTP server"),
+            ssh_username=values["ssh_username"].strip(),
+            ssh_password=values["ssh_password"],
+            ssh_port=int(values["ssh_port"].strip()),
+            dhcp_server_ip=ipaddress.ip_address(values["dhcp_server_ip"].strip()),
+            dhcp_pool_start=ipaddress.ip_address(values["dhcp_pool_start"].strip()),
+            dhcp_pool_end=ipaddress.ip_address(values["dhcp_pool_end"].strip()),
+            dhcp_lease_seconds=int(values["dhcp_lease_seconds"].strip()),
+            dhcp_wait_seconds=int(values["dhcp_wait_seconds"].strip()),
+            dhcp_ssh_probe_seconds=int(values["dhcp_ssh_probe_seconds"].strip()),
+            ping_timeout_seconds=int(values["ping_timeout_seconds"].strip()),
+            ping_interval_seconds=int(values["ping_interval_seconds"].strip()),
+            use_dhcp_server=bool(values["use_dhcp_server"]),
+        )
+        config.validate()
+        return config
+
+    def validate(self):
+        if not self.ssh_username:
+            raise ValueError("SSH username is required.")
+        if self.use_dhcp_server and not self.staging_interface:
+            raise ValueError("Select a network interface for the built-in DHCP server.")
+        if not 1 <= self.ssh_port <= 65535:
+            raise ValueError("SSH port must be between 1 and 65535.")
+        if self.target_start > self.target_end:
+            raise ValueError("Target start must be lower than or equal to target end.")
+        if self.dhcp_pool_start > self.dhcp_pool_end:
+            raise ValueError("DHCP pool start must be lower than or equal to DHCP pool end.")
+        if self.dhcp_server_ip not in self.scan_subnet:
+            raise ValueError("DHCP server IP must be inside the scan subnet.")
+        if self.dhcp_pool_start not in self.scan_subnet or self.dhcp_pool_end not in self.scan_subnet:
+            raise ValueError("DHCP pool must be inside the scan subnet.")
+        dhcp_values = set(range(int(self.dhcp_pool_start), int(self.dhcp_pool_end) + 1))
+        target_values = set(range(int(self.target_start), int(self.target_end) + 1))
+        if dhcp_values & target_values:
+            raise ValueError("DHCP pool must not overlap the target static IP range.")
+        if self.dhcp_lease_seconds < 60:
+            raise ValueError("DHCP lease seconds must be at least 60.")
+        if self.dhcp_wait_seconds < 10:
+            raise ValueError("DHCP wait seconds must be at least 10.")
+        if self.dhcp_ssh_probe_seconds < 5:
+            raise ValueError("DHCP SSH probe seconds must be at least 5.")
+        if self.ping_timeout_seconds < 5:
+            raise ValueError("Ping timeout seconds must be at least 5.")
+        if self.ping_interval_seconds < 1:
+            raise ValueError("Ping interval seconds must be at least 1.")
+
+
+@dataclasses.dataclass(frozen=True)
+class PhoneDhcpLease:
+    ip: ipaddress.IPv4Address
+    mac: str
+    hostname: str
+    vendor_class: str
+
+
+def phone_log(progress, message):
+    if progress:
+        progress(message)
+
+
+def phone_load_state():
+    if not os.path.exists(PHONE_CONFIG_STATE_FILE):
+        return {"phones": []}
+    with open(PHONE_CONFIG_STATE_FILE, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def phone_save_state(state):
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    with open(PHONE_CONFIG_STATE_FILE, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2, sort_keys=True)
+
+
+def phone_load_settings():
+    settings = dict(PHONE_CONFIG_DEFAULTS)
+    settings["use_dhcp_server"] = True
+    if os.path.exists(PHONE_CONFIG_SETTINGS_FILE):
+        try:
+            with open(PHONE_CONFIG_SETTINGS_FILE, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            for key in PHONE_CONFIG_SETTING_KEYS:
+                if key in loaded:
+                    settings[key] = loaded[key]
+        except (OSError, json.JSONDecodeError):
+            pass
+    return settings
+
+
+def phone_save_settings(settings):
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    payload = {key: settings[key] for key in PHONE_CONFIG_SETTING_KEYS if key in settings}
+    with open(PHONE_CONFIG_SETTINGS_FILE, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+
+
+def phone_append_config_log(record):
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    try:
+        return phone_write_config_log_row(PHONE_CONFIG_LOG_FILE, record)
+    except OSError:
+        return phone_write_config_log_row(PHONE_CONFIG_PENDING_LOG_FILE, record)
+
+
+def phone_write_config_log_row(path, record):
+    file_exists = os.path.exists(path)
+    with open(path, "a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PHONE_CONFIG_LOG_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({key: record.get(key, "") for key in PHONE_CONFIG_LOG_FIELDS})
+    return path
+
+
+def phone_ensure_config_log_file():
+    if os.path.exists(PHONE_CONFIG_LOG_FILE):
+        return
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    with open(PHONE_CONFIG_LOG_FILE, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PHONE_CONFIG_LOG_FIELDS)
+        writer.writeheader()
+
+
+def phone_read_config_log():
+    phone_ensure_config_log_file()
+    rows = []
+    for path in (PHONE_CONFIG_LOG_FILE, PHONE_CONFIG_PENDING_LOG_FILE):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", newline="") as handle:
+                rows.extend(csv.DictReader(handle))
+        except OSError:
+            continue
+    return rows
+
+
+def phone_used_target_ips(state):
+    return {
+        str(phone.get("target_ip"))
+        for phone in state.get("phones", [])
+        if phone.get("status") in {"pending", "rebooting", "configured"}
+    }
+
+
+def phone_next_target_ip(config, state):
+    used = phone_used_target_ips(state)
+    for value in range(int(config.target_start), int(config.target_end) + 1):
+        candidate = ipaddress.ip_address(value)
+        if str(candidate) not in used:
+            return candidate
+    raise RuntimeError("No free target IPs remain in the configured range.")
+
+
+def phone_append_assignment(state, dhcp_ip, target_ip, status, dhcp_mac=None, message=None):
+    item = {
+        "dhcp_ip": str(dhcp_ip),
+        "target_ip": str(target_ip),
+        "status": status,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    if dhcp_mac:
+        item["dhcp_mac"] = dhcp_mac
+    if message:
+        item["message"] = message
+    state.setdefault("phones", []).append(item)
+
+
+def phone_update_assignment(state, target_ip, status, message=None):
+    target = str(target_ip)
+    for phone in reversed(state.get("phones", [])):
+        if phone.get("target_ip") == target:
+            phone["status"] = status
+            phone["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            if message:
+                phone["message"] = message
+            return
+
+
+def phone_ip_to_bytes(value):
+    return socket.inet_aton(str(value))
+
+
+def phone_bytes_to_ip(value):
+    return ipaddress.ip_address(socket.inet_ntoa(value))
+
+
+def phone_mac_to_text(value):
+    return ":".join(f"{byte:02x}" for byte in value)
+
+
+def phone_parse_dhcp_options(data):
+    options = {}
+    index = 0
+    while index < len(data):
+        code = data[index]
+        index += 1
+        if code == 255:
+            break
+        if code == 0:
+            continue
+        if index >= len(data):
+            break
+        length = data[index]
+        index += 1
+        options[code] = data[index : index + length]
+        index += length
+    return options
+
+
+def phone_dhcp_option(code, value):
+    if len(value) > 255:
+        raise ValueError(f"DHCP option {code} is too long.")
+    return bytes([code, len(value)]) + value
+
+
+def phone_dhcp_message_type(options):
+    value = options.get(53)
+    return value[0] if value else None
+
+
+class PhoneDhcpServer:
+    def __init__(self, config, progress=None):
+        self.config = config
+        self.progress = progress
+        self.thread = None
+        self.stop_event = threading.Event()
+        self.ready_event = threading.Event()
+        self.start_error = None
+        self.leases = {}
+        self.lease_queue = queue.Queue()
+        self.socket = None
+
+    def start(self):
+        if self.thread:
+            return
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+        if not self.ready_event.wait(timeout=5):
+            raise RuntimeError("DHCP server did not finish starting within 5 seconds.")
+        if self.start_error:
+            raise RuntimeError(self.start_error)
+
+    def stop(self):
+        self.stop_event.set()
+        if self.socket:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+        if self.thread:
+            self.thread.join(timeout=2)
+
+    def wait_for_lease(self, timeout_seconds):
+        try:
+            return self.lease_queue.get(timeout=timeout_seconds)
+        except queue.Empty as exc:
+            raise TimeoutError("Timed out waiting for a DHCP lease.") from exc
+
+    def serve(self):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                self.socket = sock
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.bind(("", 67))
+                sock.settimeout(1)
+                self.ready_event.set()
+                phone_log(
+                    self.progress,
+                    f"DHCP server listening on UDP/67 using {self.config.dhcp_server_ip} "
+                    f"as server IP with pool {self.config.dhcp_pool_start}-{self.config.dhcp_pool_end}",
+                )
+                while not self.stop_event.is_set():
+                    try:
+                        data, _addr = sock.recvfrom(4096)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+                    try:
+                        self.handle_packet(sock, data)
+                    except Exception as exc:
+                        phone_log(self.progress, f"DHCP warning: {exc}")
+        except PermissionError:
+            self.start_error = "DHCP server needs Administrator privileges to bind UDP port 67."
+            self.ready_event.set()
+        except OSError as exc:
+            self.start_error = f"DHCP server could not start: {exc}"
+            self.ready_event.set()
+
+    def handle_packet(self, sock, data):
+        if len(data) < 240 or data[236:240] != b"\x63\x82\x53\x63":
+            return
+
+        fixed = data[:236]
+        op, _htype, hlen, _hops, xid, _secs, flags = struct.unpack("!BBBBIHH", fixed[:12])
+        if op != 1 or hlen < 1:
+            return
+
+        ciaddr = fixed[12:16]
+        chaddr = fixed[28 : 28 + hlen]
+        mac = phone_mac_to_text(chaddr[:6])
+        options = phone_parse_dhcp_options(data[240:])
+        msg_type = phone_dhcp_message_type(options)
+        if msg_type not in {1, 3}:
+            return
+
+        hostname = options.get(12, b"").decode(errors="ignore")
+        vendor_class = options.get(60, b"").decode(errors="ignore")
+        if msg_type == 1:
+            offered_ip = self.lease_for_mac(mac)
+            phone_log(self.progress, f"DHCP discover from {mac}; offering {offered_ip}")
+            reply_type = 2
+        else:
+            server_identifier = options.get(54)
+            if server_identifier and server_identifier != phone_ip_to_bytes(self.config.dhcp_server_ip):
+                selected_server = phone_bytes_to_ip(server_identifier) if len(server_identifier) == 4 else "unknown"
+                phone_log(self.progress, f"Ignoring DHCP request from {mac}; selected server is {selected_server}")
+                return
+            if mac not in self.leases:
+                phone_log(self.progress, f"Ignoring DHCP request from {mac}; no offer was made to this MAC")
+                return
+            offered_ip = self.leases[mac]
+            requested_ip = self.requested_ip(options, ciaddr)
+            if requested_ip and requested_ip != offered_ip:
+                phone_log(self.progress, f"Ignoring DHCP request from {mac}; requested {requested_ip}, offered {offered_ip}")
+                return
+            phone_log(self.progress, f"DHCP request from {mac}; ack {offered_ip}")
+            reply_type = 5
+            self.lease_queue.put(PhoneDhcpLease(offered_ip, mac, hostname, vendor_class))
+
+        reply = self.build_reply(fixed, xid, flags, fixed[28:44], offered_ip, reply_type)
+        sock.sendto(reply, ("255.255.255.255", 68))
+        sock.sendto(reply, (str(self.config.scan_subnet.broadcast_address), 68))
+
+    def lease_for_mac(self, mac):
+        if mac in self.leases:
+            return self.leases[mac]
+        used = set(self.leases.values())
+        for value in range(int(self.config.dhcp_pool_start), int(self.config.dhcp_pool_end) + 1):
+            candidate = ipaddress.ip_address(value)
+            if candidate not in used:
+                self.leases[mac] = candidate
+                return candidate
+        raise RuntimeError("No free DHCP lease IPs remain.")
+
+    def requested_ip(self, options, ciaddr):
+        requested = options.get(50)
+        if requested and len(requested) == 4:
+            return phone_bytes_to_ip(requested)
+        if ciaddr != b"\x00\x00\x00\x00":
+            return phone_bytes_to_ip(ciaddr)
+        return None
+
+    def build_reply(self, _request, xid, flags, chaddr, yiaddr, message_type):
+        fixed = struct.pack(
+            "!BBBBIHH4s4s4s4s16s64s128s",
+            2,
+            1,
+            6,
+            0,
+            xid,
+            0,
+            flags,
+            b"\x00\x00\x00\x00",
+            phone_ip_to_bytes(yiaddr),
+            phone_ip_to_bytes(self.config.dhcp_server_ip),
+            b"\x00\x00\x00\x00",
+            chaddr,
+            b"",
+            b"",
+        )
+        options = [
+            phone_dhcp_option(53, bytes([message_type])),
+            phone_dhcp_option(54, phone_ip_to_bytes(self.config.dhcp_server_ip)),
+            phone_dhcp_option(51, struct.pack("!I", self.config.dhcp_lease_seconds)),
+            phone_dhcp_option(1, phone_ip_to_bytes(self.config.netmask)),
+            phone_dhcp_option(3, phone_ip_to_bytes(self.config.gateway)),
+            phone_dhcp_option(6, phone_ip_to_bytes(self.config.gateway)),
+            phone_dhcp_option(28, phone_ip_to_bytes(self.config.scan_subnet.broadcast_address)),
+            phone_dhcp_option(66, self.config.tftp_server.encode()),
+            b"\xff",
+        ]
+        return fixed + b"\x63\x82\x53\x63" + b"".join(options)
+
+
+def phone_tcp_port_open(host, port, timeout):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        return sock.connect_ex((str(host), port)) == 0
+
+
+def phone_ssh_connect(host, config):
+    if paramiko is None:
+        raise RuntimeError("Missing dependency: install paramiko.")
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=str(host),
+        port=config.ssh_port,
+        username=config.ssh_username,
+        password=config.ssh_password,
+        look_for_keys=False,
+        allow_agent=False,
+        timeout=3,
+        auth_timeout=3,
+        banner_timeout=3,
+    )
+    return client
+
+
+def phone_wait_for_ssh_login(host, config, timeout_seconds, progress=None):
+    deadline = time.monotonic() + timeout_seconds
+    last_error = ""
+    phone_log(progress, f"Waiting for SSH login on {host}...")
+    while time.monotonic() < deadline:
+        try:
+            client = phone_ssh_connect(host, config)
+            client.close()
+            phone_log(progress, f"SSH login OK: {host}")
+            return
+        except Exception as exc:
+            last_error = str(exc)
+            time.sleep(2)
+    raise TimeoutError(f"Timed out waiting for SSH login on {host}: {last_error}")
+
+
+def phone_find_with_dhcp_server(config, progress=None):
+    server = PhoneDhcpServer(config, progress=progress)
+    server.start()
+    try:
+        phone_log(progress, "Waiting for a DHCP phone lease...")
+        deadline = time.monotonic() + config.dhcp_wait_seconds
+        last_error = ""
+        while time.monotonic() < deadline:
+            remaining = max(1, int(deadline - time.monotonic()))
+            lease = server.wait_for_lease(remaining)
+            phone_log(progress, f"DHCP lease: {lease.ip} for {lease.mac}")
+            if lease.hostname:
+                phone_log(progress, f"Hostname: {lease.hostname}")
+            if lease.vendor_class:
+                phone_log(progress, f"Vendor class: {lease.vendor_class}")
+            try:
+                phone_wait_for_ssh_login(lease.ip, config, config.dhcp_ssh_probe_seconds, progress)
+                return lease
+            except TimeoutError as exc:
+                last_error = str(exc)
+                phone_log(progress, f"Lease {lease.ip} did not accept phone SSH login; still waiting.")
+        raise TimeoutError(f"Timed out waiting for a DHCP lease with phone SSH login: {last_error}")
+    finally:
+        server.stop()
+
+
+def phone_find_by_scan(config, progress=None):
+    hosts = [str(host) for host in config.scan_subnet.hosts()]
+    phone_log(progress, f"Scanning {config.scan_subnet} for SSH on port {config.ssh_port}...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+        futures = {
+            pool.submit(phone_tcp_port_open, host, config.ssh_port, 1.5): host
+            for host in hosts
+        }
+        candidates = []
+        for future in concurrent.futures.as_completed(futures):
+            host = futures[future]
+            try:
+                if future.result():
+                    candidates.append(host)
+                    phone_log(progress, f"SSH open: {host}")
+            except OSError:
+                pass
+
+    authenticated = []
+    for candidate in sorted(candidates, key=ipaddress.ip_address):
+        try:
+            client = phone_ssh_connect(candidate, config)
+            client.close()
+            authenticated.append(candidate)
+            phone_log(progress, f"Phone login OK: {candidate}")
+        except Exception as exc:
+            phone_log(progress, f"Skipping {candidate}: {exc}")
+
+    if not authenticated:
+        raise RuntimeError("No scanned SSH hosts accepted the phone login.")
+    if len(authenticated) > 1:
+        raise RuntimeError("More than one device accepted the phone login. Use DHCP mode or isolate one phone.")
+    return PhoneDhcpLease(ipaddress.ip_address(authenticated[0]), "", "", "")
+
+
+def phone_interfaces_content(target_ip, config):
+    return "\n".join(
+        [
+            "# Configure Loopback",
+            "auto lo",
+            "iface lo inet loopback",
+            "",
+            "auto eth0",
+            "iface eth0 inet static",
+            f"address {target_ip}",
+            f"netmask {config.netmask}",
+            f"gateway {config.gateway}",
+            f"server  {config.tftp_server}",
+            "",
+        ]
+    )
+
+
+def phone_sh_single_quote(value):
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def phone_run_ssh_command(client, command, timeout=30):
+    _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+    exit_code = stdout.channel.recv_exit_status()
+    return exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
+
+
+def phone_write_config(dhcp_ip, target_ip, config, progress=None):
+    content = phone_interfaces_content(target_ip, config)
+    tftp_content = config.tftp_server + "\n"
+    backup_suffix = time.strftime("%Y%m%d-%H%M%S")
+    command = "\n".join(
+        [
+            "set -e",
+            f"cp /etc/network/interfaces /etc/network/interfaces.bak-ip-switcher-{backup_suffix}",
+            f"cp /etc/tftp_server /etc/tftp_server.bak-ip-switcher-{backup_suffix}",
+            f"printf %s {phone_sh_single_quote(content)} > /etc/network/interfaces",
+            f"printf %s {phone_sh_single_quote(tftp_content)} > /etc/tftp_server",
+            "sync",
+            "(sleep 1; reboot) >/dev/null 2>&1 &",
+        ]
+    )
+    phone_log(progress, f"Connecting to {dhcp_ip} over SSH...")
+    client = phone_ssh_connect(dhcp_ip, config)
+    try:
+        phone_log(progress, f"Writing static IP {target_ip} and TFTP server {config.tftp_server}...")
+        exit_code, stdout_text, stderr_text = phone_run_ssh_command(client, command, timeout=30)
+        if exit_code != 0:
+            raise RuntimeError(
+                f"Remote configuration failed with exit code {exit_code}\n"
+                f"stdout: {stdout_text}\n"
+                f"stderr: {stderr_text}"
+            )
+    finally:
+        client.close()
+
+
+def phone_read_remote_mac(host, config):
+    client = phone_ssh_connect(host, config)
+    try:
+        exit_code, stdout_text, _stderr_text = phone_run_ssh_command(
+            client,
+            "cat /sys/class/net/eth0/address 2>/dev/null || true",
+            timeout=10,
+        )
+    finally:
+        client.close()
+    if exit_code != 0:
+        return ""
+    return stdout_text.strip().lower()
+
+
+def phone_interface_has_ip(interface_name, ip_address):
+    escaped_name = interface_name.replace("'", "''")
+    escaped_ip = str(ip_address).replace("'", "''")
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$match = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias '{escaped_name}' -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.IPAddress -eq '{escaped_ip}' }} |
+    Select-Object -First 1
+if ($match) {{ 'true' }} else {{ 'false' }}
+"""
+    result = run_powershell(script)
+    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+
+
+def phone_wait_for_interface_ip(config, progress=None, timeout_seconds=20):
+    deadline = time.monotonic() + timeout_seconds
+    phone_log(progress, f"Waiting for Windows to apply {config.dhcp_server_ip} on {config.staging_interface}...")
+    while time.monotonic() < deadline:
+        if phone_interface_has_ip(config.staging_interface, config.dhcp_server_ip):
+            phone_log(progress, f"Confirmed {config.staging_interface} has {config.dhcp_server_ip}.")
+            return
+        time.sleep(1)
+    raise RuntimeError(
+        f"{config.staging_interface} did not show {config.dhcp_server_ip} within {timeout_seconds} seconds."
+    )
+
+
+def phone_apply_staging_interface(config, progress=None):
+    if not config.use_dhcp_server:
+        return
+
+    args = [
+        "netsh",
+        "interface",
+        "ipv4",
+        "set",
+        "address",
+        f"name={config.staging_interface}",
+        "source=static",
+        f"address={config.dhcp_server_ip}",
+        f"mask={config.netmask}",
+        f"gateway={config.gateway or 'none'}",
+    ]
+    phone_log(progress, f"Setting {config.staging_interface} to {config.dhcp_server_ip}/{config.netmask}...")
+    result = run_hidden(args)
+    if result.returncode != 0:
+        raise RuntimeError(
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"Could not set {config.staging_interface} to {config.dhcp_server_ip}."
+        )
+    phone_wait_for_interface_ip(config, progress)
+    phone_log(progress, f"{config.staging_interface} is ready for DHCP hosting.")
+
+
+def phone_ping_once(host):
+    command = ["ping", "-n", "1", "-w", "1000", str(host)]
+    result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+    return result.returncode == 0
+
+
+def phone_wait_for_ping(host, timeout_seconds, interval_seconds, progress=None):
+    deadline = time.monotonic() + timeout_seconds
+    success_count = 0
+    phone_log(progress, f"Waiting for ping replies from {host}...")
+    while time.monotonic() < deadline:
+        if phone_ping_once(host):
+            success_count += 1
+            phone_log(progress, f"Ping reply {success_count}/3")
+            if success_count >= 3:
+                return True
+        else:
+            success_count = 0
+        time.sleep(interval_seconds)
+    return False
+
+
+def phone_normalize_remote_text(value):
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in value.strip().split("\n"))
+
+
+def phone_verify_settings(host, target_ip, config):
+    expected_interfaces = phone_normalize_remote_text(phone_interfaces_content(target_ip, config))
+    expected_tftp = phone_normalize_remote_text(config.tftp_server)
+    marker = "---IP-SWITCHER-TFTP---"
+    command = f"cat /etc/network/interfaces; printf '\\n{marker}\\n'; cat /etc/tftp_server"
+    client = phone_ssh_connect(host, config)
+    try:
+        exit_code, stdout_text, stderr_text = phone_run_ssh_command(client, command, timeout=15)
+    finally:
+        client.close()
+    if exit_code != 0:
+        return False, f"Could not read remote config: {stderr_text.strip()}"
+    if marker not in stdout_text:
+        return False, "Could not parse remote config output."
+    interfaces_text, tftp_text = stdout_text.split(marker, 1)
+    if phone_normalize_remote_text(interfaces_text) != expected_interfaces:
+        return False, "Remote /etc/network/interfaces does not match expected static config."
+    if phone_normalize_remote_text(tftp_text) != expected_tftp:
+        return False, "Remote /etc/tftp_server does not match expected TFTP server."
+    return True, "Ping and SSH file verification succeeded."
+
+
+def phone_wait_for_settings_verification(host, target_ip, config, progress=None):
+    deadline = time.monotonic() + config.ping_timeout_seconds
+    last_message = ""
+    phone_log(progress, f"Verifying actual settings over SSH on {host}...")
+    while time.monotonic() < deadline:
+        try:
+            verified, message = phone_verify_settings(host, target_ip, config)
+            if verified:
+                phone_log(progress, "SSH settings verification OK.")
+                return True, message
+            last_message = message
+        except Exception as exc:
+            last_message = str(exc)
+        time.sleep(config.ping_interval_seconds)
+    return False, last_message or "SSH settings verification timed out."
+
+
+def phone_configure_next(config, progress=None):
+    state = phone_load_state()
+    target_ip = phone_next_target_ip(config, state)
+    phone_apply_staging_interface(config, progress)
+    lease = phone_find_with_dhcp_server(config, progress) if config.use_dhcp_server else phone_find_by_scan(config, progress)
+    phone_log(progress, f"Planned assignment: DHCP {lease.ip} -> static {target_ip}")
+    phone_mac = lease.mac
+    if not phone_mac:
+        try:
+            phone_mac = phone_read_remote_mac(lease.ip, config)
+            if phone_mac:
+                phone_log(progress, f"Phone MAC: {phone_mac}")
+        except Exception as exc:
+            phone_log(progress, f"Could not read phone MAC before configuration: {exc}")
+    log_base = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "mac": phone_mac,
+        "dhcp_ip": str(lease.ip),
+        "target_ip": str(target_ip),
+        "netmask": config.netmask,
+        "gateway": config.gateway,
+        "tftp_server": config.tftp_server,
+    }
+
+    phone_append_assignment(state, lease.ip, target_ip, "pending", dhcp_mac=phone_mac)
+    phone_save_state(state)
+    try:
+        phone_write_config(lease.ip, target_ip, config, progress)
+        phone_update_assignment(state, target_ip, "rebooting")
+        phone_save_state(state)
+
+        if not phone_wait_for_ping(target_ip, config.ping_timeout_seconds, config.ping_interval_seconds, progress):
+            phone_update_assignment(state, target_ip, "failed", "Timed out waiting for ping.")
+            phone_save_state(state)
+            raise RuntimeError(f"{target_ip} did not respond to ping before timeout.")
+
+        verified, message = phone_wait_for_settings_verification(target_ip, target_ip, config, progress)
+        if not verified:
+            phone_update_assignment(state, target_ip, "failed", message)
+            phone_save_state(state)
+            raise RuntimeError(message)
+
+        phone_update_assignment(state, target_ip, "configured", message)
+        phone_save_state(state)
+        try:
+            log_path = phone_append_config_log({**log_base, "status": "configured", "message": message})
+            if log_path != PHONE_CONFIG_LOG_FILE:
+                phone_log(progress, f"Main CSV log was locked; wrote assignment to {os.path.basename(log_path)}.")
+        except OSError as log_exc:
+            phone_log(progress, f"Could not write phone assignment log: {log_exc}")
+        phone_log(progress, f"Success: {target_ip} is responding and settings were verified.")
+        return target_ip
+    except Exception as exc:
+        phone_update_assignment(state, target_ip, "failed", str(exc))
+        phone_save_state(state)
+        try:
+            log_path = phone_append_config_log({**log_base, "status": "failed", "message": str(exc)})
+            if log_path != PHONE_CONFIG_LOG_FILE:
+                phone_log(progress, f"Main CSV log was locked; wrote assignment to {os.path.basename(log_path)}.")
+        except OSError as log_exc:
+            phone_log(progress, f"Could not write phone assignment log: {log_exc}")
+        raise
+
+
 class IPSwitcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -502,6 +1330,7 @@ class IPSwitcherApp(ctk.CTk):
         self.preset_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
         self.mtputty_window = None
+        self.phone_config_window = None
 
         self.current_values = {}
 
@@ -531,6 +1360,7 @@ class IPSwitcherApp(ctk.CTk):
             ],
             "Tools": [
                 ("MTPuTTY XML generator...", self.open_mtputty_generator),
+                ("Phone configurator...", self.open_phone_configurator),
             ],
             "Help": [
                 ("About", self.show_about),
@@ -1134,6 +1964,543 @@ class IPSwitcherApp(ctk.CTk):
             fg_color="#2d8a66",
             hover_color="#35a579",
         ).grid(row=0, column=1, sticky="e")
+
+    def open_phone_configurator(self):
+        if self.phone_config_window and self.phone_config_window.winfo_exists():
+            self.phone_config_window.focus()
+            return
+
+        window = ctk.CTkToplevel(self)
+        self.phone_config_window = window
+        window.title("Phone Configurator")
+        window.geometry("1120x760")
+        window.minsize(980, 680)
+        window.configure(fg_color="#101418")
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        window.after(50, lambda: apply_dark_window_frame(window))
+
+        saved_settings = phone_load_settings()
+        values = {
+            key: tk.StringVar(value=str(saved_settings.get(key, PHONE_CONFIG_DEFAULTS[key])))
+            for key in PHONE_CONFIG_DEFAULTS
+        }
+        phone_interfaces = []
+        staging_interface_var = values["staging_interface"]
+        use_dhcp_var = tk.BooleanVar(value=bool(saved_settings.get("use_dhcp_server", True)))
+        status_var = tk.StringVar(value="Ready to configure one phone.")
+        log_queue = queue.Queue()
+        worker_state = {"running": False}
+        log_text = None
+        start_button = None
+
+        header = ctk.CTkFrame(window, fg_color="#151b22", corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Phone Configurator",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color="#f7fafc",
+        ).grid(row=0, column=0, sticky="w", padx=20, pady=(14, 0))
+        ctk.CTkLabel(
+            header,
+            text="DHCP staging, SSH static IP setup, ping, and read-back verification",
+            text_color="#9aa8b6",
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(2, 14))
+
+        content = ctk.CTkFrame(window, fg_color="transparent")
+        content.grid(row=1, column=0, sticky="nsew", padx=20, pady=(18, 12))
+        footer = ctk.CTkFrame(window, fg_color="transparent")
+        footer.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 16))
+
+        def clear_frame(frame):
+            for child in frame.winfo_children():
+                child.destroy()
+            for index in range(8):
+                frame.grid_columnconfigure(index, weight=0, minsize=0)
+                frame.grid_rowconfigure(index, weight=0, minsize=0)
+
+        def append_log(message):
+            if not log_text or not log_text.winfo_exists():
+                return
+            log_text.insert("end", f"{time.strftime('%H:%M:%S')}  {message}\n")
+            log_text.see("end")
+
+        def read_phone_values():
+            raw = {key: variable.get() for key, variable in values.items()}
+            raw["use_dhcp_server"] = use_dhcp_var.get()
+            return PhoneConfig.from_values(raw)
+
+        def settings_payload():
+            payload = {key: variable.get() for key, variable in values.items()}
+            payload["use_dhcp_server"] = use_dhcp_var.get()
+            return payload
+
+        def refresh_phone_interfaces():
+            nonlocal phone_interfaces
+            try:
+                phone_interfaces = get_interfaces()
+            except Exception:
+                phone_interfaces = []
+            names = [item["name"] for item in phone_interfaces]
+            if names and staging_interface_var.get() not in names:
+                selected = self.selected_interface if self.selected_interface in names else ""
+                if not selected:
+                    active = next((item["name"] for item in phone_interfaces if item.get("status") == "Up"), "")
+                    selected = active or names[0]
+                staging_interface_var.set(selected)
+            return names
+
+        def load_saved_settings_into_form():
+            settings = phone_load_settings()
+            for key, variable in values.items():
+                variable.set(str(settings.get(key, PHONE_CONFIG_DEFAULTS[key])))
+            use_dhcp_var.set(bool(settings.get("use_dhcp_server", True)))
+
+        def show_assignment_log():
+            rows = phone_read_config_log()
+            log_window = ctk.CTkToplevel(window)
+            log_window.title("Phone Configuration Log")
+            log_window.geometry("980x560")
+            log_window.minsize(860, 460)
+            log_window.configure(fg_color="#101418")
+            log_window.grid_columnconfigure(0, weight=1)
+            log_window.grid_rowconfigure(1, weight=1)
+            log_window.after(50, lambda: apply_dark_window_frame(log_window))
+
+            ctk.CTkLabel(
+                log_window,
+                text="Phone Configuration Log",
+                font=ctk.CTkFont(size=20, weight="bold"),
+                text_color="#f7fafc",
+            ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 8))
+
+            text = ctk.CTkTextbox(
+                log_window,
+                fg_color="#101418",
+                border_width=1,
+                border_color="#34414d",
+                text_color="#d8e0e7",
+                font=ctk.CTkFont(family="Consolas", size=12),
+            )
+            text.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 14))
+
+            if rows:
+                header_line = (
+                    f"{'Timestamp':<20} {'MAC':<17} {'DHCP IP':<15} {'Target IP':<15} "
+                    f"{'Gateway':<15} {'TFTP':<15} {'Status':<12} Message\n"
+                )
+                text.insert("end", header_line)
+                text.insert("end", "-" * 140 + "\n")
+                for row in rows:
+                    text.insert(
+                        "end",
+                        f"{row.get('timestamp', ''):<20} "
+                        f"{row.get('mac', ''):<17} "
+                        f"{row.get('dhcp_ip', ''):<15} "
+                        f"{row.get('target_ip', ''):<15} "
+                        f"{row.get('gateway', ''):<15} "
+                        f"{row.get('tftp_server', ''):<15} "
+                        f"{row.get('status', ''):<12} "
+                        f"{row.get('message', '')}\n",
+                    )
+            else:
+                text.insert("end", "No phone configuration entries have been recorded yet.\n")
+
+            actions = ctk.CTkFrame(log_window, fg_color="transparent")
+            actions.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 16))
+            actions.grid_columnconfigure(0, weight=1)
+            log_paths_text = PHONE_CONFIG_LOG_FILE
+            if os.path.exists(PHONE_CONFIG_PENDING_LOG_FILE):
+                log_paths_text = f"{PHONE_CONFIG_LOG_FILE} + {os.path.basename(PHONE_CONFIG_PENDING_LOG_FILE)}"
+            ctk.CTkLabel(actions, text=log_paths_text, text_color="#9aa8b6", anchor="w").grid(
+                row=0, column=0, sticky="ew", padx=(0, 12)
+            )
+            ctk.CTkButton(
+                actions,
+                text="Open CSV",
+                width=96,
+                command=open_assignment_log_file,
+                fg_color="#1f6f8b",
+                hover_color="#2382a4",
+            ).grid(row=0, column=1, padx=(0, 8))
+            ctk.CTkButton(
+                actions,
+                text="Close",
+                width=80,
+                command=log_window.destroy,
+                fg_color="#2f3b46",
+                hover_color="#3b4a57",
+            ).grid(row=0, column=2)
+
+        def open_assignment_log_file():
+            phone_ensure_config_log_file()
+            try:
+                os.startfile(PHONE_CONFIG_LOG_FILE)
+            except OSError as exc:
+                messagebox.showerror("Open Log Failed", str(exc), parent=window)
+
+        def open_assignment_log_folder():
+            phone_ensure_config_log_file()
+            try:
+                os.startfile(APP_DATA_DIR)
+            except OSError as exc:
+                messagebox.showerror("Open Folder Failed", str(exc), parent=window)
+
+        def poll_log_queue():
+            nonlocal start_button
+            while True:
+                try:
+                    kind, message = log_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if kind == "log":
+                    append_log(message)
+                elif kind == "status":
+                    status_var.set(message)
+                elif kind == "done":
+                    worker_state["running"] = False
+                    if start_button and start_button.winfo_exists():
+                        start_button.configure(state="normal")
+                    status_var.set(message)
+                    show_run_view()
+                elif kind == "error":
+                    worker_state["running"] = False
+                    if start_button and start_button.winfo_exists():
+                        start_button.configure(state="normal")
+                    status_var.set("Configuration failed.")
+                    messagebox.showerror("Phone Configuration Failed", message, parent=window)
+            if window.winfo_exists():
+                window.after(200, poll_log_queue)
+
+        def run_worker(config):
+            try:
+                result_ip = phone_configure_next(config, progress=lambda message: log_queue.put(("log", message)))
+            except Exception as exc:
+                log_queue.put(("log", f"ERROR: {exc}"))
+                log_queue.put(("error", str(exc)))
+                return
+            log_queue.put(("done", f"Configured and verified {result_ip}."))
+
+        def start_configuration():
+            if worker_state["running"]:
+                return
+            try:
+                config = read_phone_values()
+            except Exception as exc:
+                messagebox.showerror("Invalid Phone Configuration", str(exc), parent=window)
+                return
+            phone_save_settings(settings_payload())
+            if config.use_dhcp_server and not messagebox.askyesno(
+                "Start DHCP Server",
+                "Start the built-in DHCP server on UDP port 67?\n\nUse this only on an isolated provisioning network.",
+                parent=window,
+            ):
+                return
+
+            log_text.delete("1.0", "end")
+            append_log("Starting phone configuration.")
+            status_var.set("Configuring phone...")
+            worker_state["running"] = True
+            if start_button and start_button.winfo_exists():
+                start_button.configure(state="disabled")
+            threading.Thread(target=run_worker, args=(config,), daemon=True).start()
+
+        def summary_label(parent, title, value, row):
+            ctk.CTkLabel(parent, text=title, text_color="#9aa8b6", anchor="w").grid(
+                row=row, column=0, sticky="w", padx=14, pady=5
+            )
+            ctk.CTkLabel(parent, text=value, text_color="#f7fafc", anchor="w").grid(
+                row=row, column=1, sticky="ew", padx=(0, 14), pady=5
+            )
+
+        def render_recent_log(parent):
+            rows = phone_read_config_log()[-8:]
+            text = ctk.CTkTextbox(
+                parent,
+                height=170,
+                fg_color="#101418",
+                border_width=1,
+                border_color="#34414d",
+                text_color="#d8e0e7",
+                font=ctk.CTkFont(family="Consolas", size=12),
+            )
+            text.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+            if not rows:
+                text.insert("end", "No phones configured yet.\n")
+                return
+            for row in rows:
+                text.insert(
+                    "end",
+                    f"{row.get('target_ip', '-'):<15} {row.get('mac', '-'):<17} "
+                    f"{row.get('status', '-'):<12} {row.get('message', '')}\n",
+                )
+
+        def show_run_view(refresh_only=False):
+            nonlocal log_text, start_button
+            if not refresh_only:
+                clear_frame(content)
+                clear_frame(footer)
+                content.grid_columnconfigure(0, minsize=360)
+                content.grid_columnconfigure(1, weight=1)
+                content.grid_rowconfigure(0, weight=1)
+
+                left = ctk.CTkFrame(content, fg_color="transparent")
+                left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+                left.grid_columnconfigure(0, weight=1)
+                right = ctk.CTkFrame(content, fg_color="#182029", corner_radius=8)
+                right.grid(row=0, column=1, sticky="nsew")
+                right.grid_columnconfigure(0, weight=1)
+                right.grid_rowconfigure(1, weight=1)
+            else:
+                left = content.grid_slaves(row=0, column=0)[0]
+                for child in left.winfo_children():
+                    child.destroy()
+                right = content.grid_slaves(row=0, column=1)[0]
+
+            summary_panel = ctk.CTkFrame(left, fg_color="#182029", corner_radius=8)
+            summary_panel.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+            summary_panel.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(
+                summary_panel,
+                text="Current Plan",
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color="#f7fafc",
+            ).grid(row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(14, 8))
+            try:
+                config = read_phone_values()
+                next_ip = phone_next_target_ip(config, phone_load_state())
+                summary_label(summary_panel, "Next IP", str(next_ip), 1)
+                summary_label(summary_panel, "Target range", f"{config.target_start} - {config.target_end}", 2)
+                summary_label(
+                    summary_panel,
+                    "DHCP staging",
+                    f"{config.dhcp_pool_start} - {config.dhcp_pool_end} via {config.dhcp_server_ip}"
+                    if config.use_dhcp_server
+                    else "SSH scan mode",
+                    3,
+                )
+                summary_label(summary_panel, "Interface", config.staging_interface or "-", 4)
+                summary_label(summary_panel, "Gateway", config.gateway, 5)
+                summary_label(summary_panel, "TFTP", config.tftp_server, 6)
+            except Exception as exc:
+                summary_label(summary_panel, "Settings", f"Invalid: {exc}", 1)
+
+            recent_panel = ctk.CTkFrame(left, fg_color="#182029", corner_radius=8)
+            recent_panel.grid(row=1, column=0, sticky="nsew")
+            recent_panel.grid_columnconfigure(0, weight=1)
+            recent_panel.grid_rowconfigure(1, weight=1)
+            left.grid_rowconfigure(1, weight=1)
+            ctk.CTkLabel(
+                recent_panel,
+                text="Last Configured Phones",
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color="#f7fafc",
+            ).grid(row=0, column=0, sticky="w", padx=14, pady=(14, 8))
+            render_recent_log(recent_panel)
+
+            if not refresh_only:
+                ctk.CTkLabel(
+                    right,
+                    text="Live Run Log",
+                    font=ctk.CTkFont(size=15, weight="bold"),
+                    text_color="#f7fafc",
+                ).grid(row=0, column=0, sticky="w", padx=14, pady=(14, 8))
+                log_text = ctk.CTkTextbox(
+                    right,
+                    fg_color="#101418",
+                    border_width=1,
+                    border_color="#34414d",
+                    text_color="#d8e0e7",
+                )
+                log_text.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+
+                footer.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(footer, textvariable=status_var, text_color="#9aa8b6", anchor="w").grid(
+                    row=0, column=0, sticky="ew", padx=(0, 12)
+                )
+                ctk.CTkButton(
+                    footer,
+                    text="Settings",
+                    width=96,
+                    command=show_settings_view,
+                    fg_color="#1f6f8b",
+                    hover_color="#2382a4",
+                ).grid(row=0, column=1, padx=(0, 8))
+                ctk.CTkButton(
+                    footer,
+                    text="View Log",
+                    width=92,
+                    command=show_assignment_log,
+                    fg_color="#1f6f8b",
+                    hover_color="#2382a4",
+                ).grid(row=0, column=2, padx=(0, 8))
+                ctk.CTkButton(
+                    footer,
+                    text="Open CSV",
+                    width=92,
+                    command=open_assignment_log_file,
+                    fg_color="#1f6f8b",
+                    hover_color="#2382a4",
+                ).grid(row=0, column=3, padx=(0, 8))
+                ctk.CTkButton(
+                    footer,
+                    text="Folder",
+                    width=78,
+                    command=open_assignment_log_folder,
+                    fg_color="#2f3b46",
+                    hover_color="#3b4a57",
+                ).grid(row=0, column=4, padx=(0, 8))
+                ctk.CTkButton(
+                    footer,
+                    text="Clear Log",
+                    width=96,
+                    command=lambda: log_text.delete("1.0", "end") if log_text else None,
+                    fg_color="#2f3b46",
+                    hover_color="#3b4a57",
+                ).grid(row=0, column=5, padx=(0, 8))
+                start_button = ctk.CTkButton(
+                    footer,
+                    text="Configure Next Phone",
+                    width=180,
+                    command=start_configuration,
+                    fg_color="#2d8a66",
+                    hover_color="#35a579",
+                )
+                start_button.grid(row=0, column=6)
+                if worker_state["running"]:
+                    start_button.configure(state="disabled")
+
+        def add_settings_panel(parent, title, row):
+            panel = ctk.CTkFrame(parent, fg_color="#182029", corner_radius=8)
+            panel.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+            panel.grid_columnconfigure((0, 1, 2), weight=1)
+            ctk.CTkLabel(
+                panel,
+                text=title,
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color="#f7fafc",
+            ).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(14, 0))
+            return panel
+
+        def save_settings_from_view():
+            try:
+                read_phone_values()
+            except Exception as exc:
+                messagebox.showerror("Invalid Phone Configuration", str(exc), parent=window)
+                return
+            phone_save_settings(settings_payload())
+            status_var.set("Phone configurator settings saved.")
+            show_run_view()
+
+        def cancel_settings_view():
+            load_saved_settings_into_form()
+            status_var.set("Settings changes discarded.")
+            show_run_view()
+
+        def show_settings_view():
+            clear_frame(content)
+            clear_frame(footer)
+            content.grid_columnconfigure(0, weight=1)
+            content.grid_rowconfigure(0, weight=1)
+            settings_scroll = ctk.CTkScrollableFrame(
+                content,
+                fg_color="transparent",
+                scrollbar_button_color="#2f3b46",
+                scrollbar_button_hover_color="#3b4a57",
+            )
+            settings_scroll.grid(row=0, column=0, sticky="nsew")
+            settings_scroll.grid_columnconfigure(0, weight=1)
+
+            network_panel = add_settings_panel(settings_scroll, "Static Phone Network", 0)
+            self.dialog_entry_group(network_panel, "Scan subnet", values["scan_subnet"], 1, 0)
+            self.dialog_entry_group(network_panel, "Target start", values["target_start"], 1, 1)
+            self.dialog_entry_group(network_panel, "Target end", values["target_end"], 1, 2)
+            self.dialog_entry_group(network_panel, "Netmask", values["netmask"], 2, 0)
+            self.dialog_entry_group(network_panel, "Gateway", values["gateway"], 2, 1)
+            self.dialog_entry_group(network_panel, "TFTP server", values["tftp_server"], 2, 2)
+
+            dhcp_panel = add_settings_panel(settings_scroll, "DHCP Staging", 1)
+            interface_names = refresh_phone_interfaces()
+            ctk.CTkCheckBox(
+                dhcp_panel,
+                text="Run built-in DHCP server",
+                variable=use_dhcp_var,
+                text_color="#d8e0e7",
+                fg_color="#1f6f8b",
+                hover_color="#2382a4",
+            ).grid(row=1, column=0, sticky="w", padx=14, pady=14)
+            ctk.CTkLabel(dhcp_panel, text="Host interface", text_color="#9aa8b6").grid(
+                row=1, column=1, sticky="w", padx=14, pady=(14, 0)
+            )
+            interface_menu = ctk.CTkOptionMenu(
+                dhcp_panel,
+                variable=staging_interface_var,
+                values=interface_names or ["No interfaces found"],
+                fg_color="#101418",
+                button_color="#1f6f8b",
+                button_hover_color="#2382a4",
+                dropdown_fg_color="#182029",
+                dropdown_hover_color="#1f6f8b",
+                state="normal" if interface_names else "disabled",
+            )
+            interface_menu.grid(row=2, column=1, sticky="ew", padx=14, pady=(5, 14))
+            def refresh_interface_menu():
+                names = refresh_phone_interfaces()
+                interface_menu.configure(
+                    values=names or ["No interfaces found"],
+                    state="normal" if names else "disabled",
+                )
+            ctk.CTkButton(
+                dhcp_panel,
+                text="Refresh Interfaces",
+                width=136,
+                command=refresh_interface_menu,
+                fg_color="#2f3b46",
+                hover_color="#3b4a57",
+            ).grid(row=2, column=2, sticky="w", padx=14, pady=(5, 14))
+            self.dialog_entry_group(dhcp_panel, "Interface IP to set", values["dhcp_server_ip"], 3, 0)
+            self.dialog_entry_group(dhcp_panel, "DHCP pool start", values["dhcp_pool_start"], 3, 1)
+            self.dialog_entry_group(dhcp_panel, "DHCP pool end", values["dhcp_pool_end"], 3, 2)
+            self.dialog_entry_group(dhcp_panel, "Lease seconds", values["dhcp_lease_seconds"], 4, 0)
+            self.dialog_entry_group(dhcp_panel, "DHCP wait", values["dhcp_wait_seconds"], 4, 1)
+
+            ssh_panel = add_settings_panel(settings_scroll, "SSH", 2)
+            self.dialog_entry_group(ssh_panel, "Username", values["ssh_username"], 1, 0)
+            self.dialog_entry_group(ssh_panel, "SSH port", values["ssh_port"], 1, 1)
+            self.dialog_entry_group(ssh_panel, "SSH probe seconds", values["dhcp_ssh_probe_seconds"], 1, 2)
+            password_entry = self.dialog_entry_group(ssh_panel, "Password", values["ssh_password"], 2, 0)
+            password_entry.configure(show="*")
+
+            verify_panel = add_settings_panel(settings_scroll, "Verification", 3)
+            self.dialog_entry_group(verify_panel, "Ping timeout", values["ping_timeout_seconds"], 1, 0)
+            self.dialog_entry_group(verify_panel, "Ping interval", values["ping_interval_seconds"], 1, 1)
+
+            footer.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(footer, textvariable=status_var, text_color="#9aa8b6", anchor="w").grid(
+                row=0, column=0, sticky="ew", padx=(0, 12)
+            )
+            ctk.CTkButton(
+                footer,
+                text="Cancel",
+                width=86,
+                command=cancel_settings_view,
+                fg_color="#2f3b46",
+                hover_color="#3b4a57",
+            ).grid(row=0, column=1, padx=(0, 8))
+            ctk.CTkButton(
+                footer,
+                text="Save Settings",
+                width=128,
+                command=save_settings_from_view,
+                fg_color="#2d8a66",
+                hover_color="#35a579",
+            ).grid(row=0, column=2)
+
+        show_run_view()
+        poll_log_queue()
 
     def dialog_entry_group(self, parent, label, variable, row, column):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
