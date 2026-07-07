@@ -785,6 +785,90 @@ def phone_dhcp_message_type(options):
     return value[0] if value else None
 
 
+def phone_build_dhcp_discover(transaction_id):
+    chaddr = b"\x02\x49\x50\x53\x57\x01" + b"\x00" * 10
+    fixed = struct.pack(
+        "!BBBBIHH4s4s4s4s16s64s128s",
+        1,
+        1,
+        6,
+        0,
+        transaction_id,
+        0,
+        0x8000,
+        b"\x00\x00\x00\x00",
+        b"\x00\x00\x00\x00",
+        b"\x00\x00\x00\x00",
+        b"\x00\x00\x00\x00",
+        chaddr,
+        b"",
+        b"",
+    )
+    options = [
+        phone_dhcp_option(53, b"\x01"),
+        phone_dhcp_option(55, bytes([1, 3, 6, 28, 51, 54])),
+        phone_dhcp_option(12, b"IP-Switcher-Probe"),
+        b"\xff",
+    ]
+    return fixed + b"\x63\x82\x53\x63" + b"".join(options)
+
+
+def phone_probe_other_dhcp_servers(config, progress=None, timeout_seconds=4):
+    if not config.use_dhcp_server:
+        return []
+
+    transaction_id = int(time.time() * 1000) & 0xFFFFFFFF
+    discover = phone_build_dhcp_discover(transaction_id)
+    offers = []
+    phone_log(progress, f"Checking for other DHCP servers on {config.staging_interface}...")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind(("", 68))
+            sock.settimeout(0.5)
+            sock.sendto(discover, ("255.255.255.255", 67))
+            sock.sendto(discover, (str(config.scan_subnet.broadcast_address), 67))
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                try:
+                    data, _addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                if len(data) < 240 or data[236:240] != b"\x63\x82\x53\x63":
+                    continue
+                _op, _htype, _hlen, _hops, xid, _secs, _flags = struct.unpack("!BBBBIHH", data[:12])
+                if xid != transaction_id:
+                    continue
+                options = phone_parse_dhcp_options(data[240:])
+                if phone_dhcp_message_type(options) != 2:
+                    continue
+                server_id = options.get(54)
+                server_ip = phone_bytes_to_ip(server_id) if server_id and len(server_id) == 4 else "unknown"
+                offered_ip = phone_bytes_to_ip(data[16:20])
+                if str(server_ip) == str(config.dhcp_server_ip):
+                    continue
+                offers.append({"server": str(server_ip), "offered_ip": str(offered_ip)})
+    except PermissionError as exc:
+        raise RuntimeError("DHCP conflict check needs Administrator privileges to bind UDP port 68.") from exc
+    except OSError as exc:
+        raise RuntimeError(f"DHCP conflict check could not run: {exc}") from exc
+
+    unique = []
+    seen = set()
+    for offer in offers:
+        key = (offer["server"], offer["offered_ip"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(offer)
+    if unique:
+        for offer in unique:
+            phone_log(progress, f"Detected other DHCP server {offer['server']} offering {offer['offered_ip']}.")
+    else:
+        phone_log(progress, "No other DHCP server responded to the probe.")
+    return unique
+
+
 class PhoneDhcpServer:
     def __init__(self, config, progress=None):
         self.config = config
@@ -1252,6 +1336,18 @@ def phone_configure_next(config, progress=None):
     state = phone_load_state()
     target_ip = phone_next_target_ip(config, state)
     phone_apply_staging_interface(config, progress)
+    conflicting_servers = phone_probe_other_dhcp_servers(config, progress)
+    if conflicting_servers:
+        details = "\n".join(
+            f"Server {item['server']} offered {item['offered_ip']}"
+            for item in conflicting_servers
+        )
+        raise RuntimeError(
+            "Another DHCP server was detected on the selected interface.\n"
+            f"{details}\n"
+            "The built-in DHCP server was not started. Use an isolated switch/VLAN/direct cable, "
+            "or disable the other DHCP server for the provisioning port."
+        )
     lease = phone_find_with_dhcp_server(config, progress) if config.use_dhcp_server else phone_find_by_scan(config, progress)
     phone_log(progress, f"Planned assignment: DHCP {lease.ip} -> static {target_ip}")
     phone_mac = lease.mac
@@ -1406,6 +1502,15 @@ class IPSwitcherApp(ctk.CTk):
             menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height() + 4)
         finally:
             menu.grab_release()
+
+    def raise_dialog(self, window):
+        try:
+            window.lift()
+            window.focus_force()
+            window.attributes("-topmost", True)
+            window.after(250, lambda: window.attributes("-topmost", False) if window.winfo_exists() else None)
+        except tk.TclError:
+            pass
 
     def build_layout(self):
         self.grid_columnconfigure(0, minsize=305)
@@ -1967,7 +2072,7 @@ class IPSwitcherApp(ctk.CTk):
 
     def open_phone_configurator(self):
         if self.phone_config_window and self.phone_config_window.winfo_exists():
-            self.phone_config_window.focus()
+            self.raise_dialog(self.phone_config_window)
             return
 
         window = ctk.CTkToplevel(self)
@@ -1978,8 +2083,10 @@ class IPSwitcherApp(ctk.CTk):
         window.configure(fg_color="#101418")
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
+        window.transient(self)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.after(50, lambda: apply_dark_window_frame(window))
+        window.after(100, lambda: self.raise_dialog(window))
 
         saved_settings = phone_load_settings()
         values = {
@@ -2068,7 +2175,9 @@ class IPSwitcherApp(ctk.CTk):
             log_window.configure(fg_color="#101418")
             log_window.grid_columnconfigure(0, weight=1)
             log_window.grid_rowconfigure(1, weight=1)
+            log_window.transient(window)
             log_window.after(50, lambda: apply_dark_window_frame(log_window))
+            log_window.after(100, lambda: self.raise_dialog(log_window))
 
             ctk.CTkLabel(
                 log_window,

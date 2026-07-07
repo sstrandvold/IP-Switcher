@@ -18,7 +18,9 @@ Version: 4.5.2
   and can be viewed or opened from the phone configurator window. Phone tool
   settings are saved in `%APPDATA%\IP Switcher\phone-configurator-settings.json`.
   The phone tool can select the host network interface and set it to the DHCP
-  server IP automatically before starting the built-in DHCP server.
+  server IP automatically before starting the built-in DHCP server. It also
+  probes the selected interface for existing DHCP servers and blocks startup if
+  another server responds.
 
 Earlier network monitoring tools have been removed so the app stays focused on switching interface IP settings.
 
