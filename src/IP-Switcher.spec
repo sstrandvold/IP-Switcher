@@ -8,7 +8,7 @@ version_file = os.path.abspath('file_version_info.txt')
 app_version_file = os.path.abspath('VERSION')
 
 a = Analysis(
-    ['ip_switcher.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=collect_data_files('customtkinter') + [(icon_file, '.'), (app_version_file, '.')],
@@ -25,7 +25,7 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    name='IP Switcher 4.5.2',
+    name='IP Switcher 5.0.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -52,5 +52,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='IP Switcher 4.5.2',
+    name='IP Switcher 5.0.0',
 )
