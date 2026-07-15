@@ -89,7 +89,7 @@ class IPSwitcherApp(ctk.CTk):
                 border_color="#34414d",
             )
             button.grid(row=0, column=column, padx=(0, 8))
-            button.configure(command=lambda target=button, menu_items=items: show_popup_menu(target, menu_items))
+            button.configure(command=lambda target=button, menu_items=items: show_popup_menu(self, target, menu_items))
 
     def build_layout(self):
         self.grid_columnconfigure(0, minsize=305)
