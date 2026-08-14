@@ -2,7 +2,7 @@
 
 IP Switcher is a small Windows GUI for changing the IPv4 configuration of network interfaces.
 
-Version: 5.0.1
+Version: 5.0.2
 
 ## What It Does
 
@@ -38,7 +38,7 @@ Then build from `src`:
 pyinstaller IP-Switcher.spec
 ```
 
-The build outputs a one-folder app at `src/dist/IP Switcher 5.0.1/`. The executable requests administrator privileges because changing interface IP settings requires elevation on Windows.
+The build outputs a one-folder app at `src/dist/IP Switcher 5.0.2/`. The executable requests administrator privileges because changing interface IP settings requires elevation on Windows.
 
 ## Installer and Signing
 

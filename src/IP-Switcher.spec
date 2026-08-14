@@ -25,7 +25,7 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    name='IP Switcher 5.0.1',
+    name='IP Switcher 5.0.2',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -52,5 +52,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='IP Switcher 5.0.1',
+    name='IP Switcher 5.0.2',
 )

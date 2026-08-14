@@ -2,11 +2,11 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "IP Switcher"
-#define MyAppVersion "5.0.1"
+#define MyAppVersion "5.0.2"
 #define MyAppPublisher "Trafsys AS"
 #define MyAppURL "https://www.trafsys.no/"
-#define MyAppExeName "IP Switcher 5.0.1.exe"
-#define MyAppBuildDir "IP Switcher 5.0.1"
+#define MyAppExeName "IP Switcher 5.0.2.exe"
+#define MyAppBuildDir "IP Switcher 5.0.2"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -67,6 +67,7 @@ Type: files; Name: "{app}\IP Switcher 4.5.0.exe"
 Type: files; Name: "{app}\IP Switcher 4.5.1.exe"
 Type: files; Name: "{app}\IP Switcher 4.5.2.exe"
 Type: files; Name: "{app}\IP Switcher 5.0.0.exe"
+Type: files; Name: "{app}\IP Switcher 5.0.1.exe"
 
 [Dirs]
 Name: "{userappdata}\{#MyAppName}"

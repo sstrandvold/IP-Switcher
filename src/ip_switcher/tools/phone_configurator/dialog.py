@@ -53,6 +53,8 @@ def show(app):
     worker_state = {"running": False}
     log_text = None
     start_button = None
+    interface_menu = None
+    rescan_button = None
 
     header = ctk.CTkFrame(window, fg_color="#151b22", corner_radius=0)
     header.grid(row=0, column=0, sticky="ew")
@@ -487,6 +489,7 @@ def show(app):
         show_run_view()
 
     def show_settings_view():
+        nonlocal interface_menu, rescan_button
         clear_frame(content)
         clear_frame(footer)
         content.grid_columnconfigure(0, weight=1)
