@@ -1,8 +1,6 @@
 IP Switcher Pre-Installation Information
 ============================================
 
-Welcome to the installation of IP Switcher!
-
 This tool allows you to manage and configure IP addresses on your selected network interface. Below are the key features:
 
 - Configure Network Interfaces: Set static IPv4 addresses or switch interfaces back to DHCP.
@@ -14,4 +12,4 @@ Important Notes:
 - Ensure that you have administrator privileges to change network settings.
 - This application is compatible with Windows operating systems only.
 
-Thank you for choosing IP Switcher. Click "Next" to continue with the installation.
+Click "Next" to continue with the installation.

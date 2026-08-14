@@ -1,8 +1,6 @@
 IP Switcher Post-Installation Information
 =============================================
 
-Thank you for installing IP Switcher!
-
 You have successfully installed the application, and it is now ready to use. Below are some important points to consider:
 
 - Launch the Application: You can start IP Switcher from the Start Menu or by using the desktop shortcut if you chose to create one during installation.
@@ -13,5 +11,3 @@ Getting Started:
 2. Select your network interface.
 3. Enter the IP address, subnet mask, and optional gateway.
 4. Apply the static configuration or switch the interface back to DHCP.
-
-Enjoy using the application!
