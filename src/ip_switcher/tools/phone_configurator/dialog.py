@@ -10,9 +10,9 @@ import customtkinter as ctk
 from ...constants import PHONE_CONFIG_DEFAULTS
 from ...network import get_interfaces
 from ...paths import APP_DATA_DIR, PHONE_CONFIG_LOG_FILE, PHONE_CONFIG_PENDING_LOG_FILE
-from ...ui_helpers import dialog_entry_group, raise_dialog
+from ...ui_helpers import raise_dialog
 from ...winutil import apply_dark_window_frame
-from .config import PhoneConfig, phone_load_settings, phone_save_settings
+from .config import phone_load_settings, phone_resolve_settings, phone_save_settings
 from .history import (
     phone_ensure_config_log_file,
     phone_load_state,
@@ -20,6 +20,19 @@ from .history import (
     phone_read_config_log,
 )
 from .ssh_ops import phone_configure_next
+
+HINT_COLOR = "#7d8b99"
+ERROR_COLOR = "#f0605a"
+ENTRY_BORDER_COLOR = "#34414d"
+PHONE_DHCP_KEYS = {"staging_interface", "dhcp_server_ip", "dhcp_pool_start", "dhcp_pool_end"}
+PHONE_ADVANCED_KEYS = {
+    "ssh_port",
+    "dhcp_ssh_probe_seconds",
+    "dhcp_lease_seconds",
+    "dhcp_wait_seconds",
+    "ping_timeout_seconds",
+    "ping_interval_seconds",
+}
 
 
 def show(app):
@@ -55,6 +68,10 @@ def show(app):
     start_button = None
     interface_menu = None
     rescan_button = None
+    save_button = None
+    form_fields = {}
+    validation_job = {"id": None}
+    advanced_state = {"open": False}
 
     header = ctk.CTkFrame(window, fg_color="#151b22", corner_radius=0)
     header.grid(row=0, column=0, sticky="ew")
@@ -89,11 +106,6 @@ def show(app):
         log_text.insert("end", f"{time.strftime('%H:%M:%S')}  {message}\n")
         log_text.see("end")
 
-    def read_phone_values():
-        raw = {key: variable.get() for key, variable in values.items()}
-        raw["use_dhcp_server"] = use_dhcp_var.get()
-        return PhoneConfig.from_values(raw)
-
     def settings_payload():
         payload = {key: variable.get() for key, variable in values.items()}
         payload["use_dhcp_server"] = use_dhcp_var.get()
@@ -116,6 +128,7 @@ def show(app):
             )
         if rescan_button is not None and rescan_button.winfo_exists():
             rescan_button.configure(state="normal")
+        schedule_validation()
         return names
 
     def refresh_phone_interfaces_async():
@@ -275,10 +288,15 @@ def show(app):
     def start_configuration():
         if worker_state["running"]:
             return
-        try:
-            config = read_phone_values()
-        except Exception as exc:
-            messagebox.showerror("Invalid Phone Configuration", str(exc), parent=window)
+        config, errors, _hints = phone_resolve_settings(settings_payload())
+        if errors:
+            messagebox.showerror(
+                "Check Settings",
+                "Fix these settings before configuring a phone:\n\n"
+                + "\n".join(f"• {message}" for message in errors.values()),
+                parent=window,
+            )
+            show_settings_view()
             return
         phone_save_settings(settings_payload())
         if config.use_dhcp_server and not messagebox.askyesno(
@@ -357,24 +375,32 @@ def show(app):
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color="#f7fafc",
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(14, 8))
-        try:
-            config = read_phone_values()
-            next_ip = phone_next_target_ip(config, phone_load_state())
-            summary_label(summary_panel, "Next IP", str(next_ip), 1)
-            summary_label(summary_panel, "Target range", f"{config.target_start} - {config.target_end}", 2)
-            summary_label(
+        config, errors, _hints = phone_resolve_settings(settings_payload())
+        if errors:
+            count = len(errors)
+            summary_label(summary_panel, "Settings", f"{count} setting{'s' if count != 1 else ''} to fix", 1)
+            ctk.CTkButton(
                 summary_panel,
-                "DHCP staging",
-                f"{config.dhcp_pool_start} - {config.dhcp_pool_end} via {config.dhcp_server_ip}"
-                if config.use_dhcp_server
-                else "SSH scan mode",
-                3,
-            )
-            summary_label(summary_panel, "Interface", config.staging_interface or "-", 4)
-            summary_label(summary_panel, "Gateway", config.gateway, 5)
-            summary_label(summary_panel, "TFTP", config.tftp_server, 6)
-        except Exception as exc:
-            summary_label(summary_panel, "Settings", f"Invalid: {exc}", 1)
+                text="Open Settings",
+                width=120,
+                command=show_settings_view,
+                fg_color="#1f6f8b",
+                hover_color="#2382a4",
+            ).grid(row=2, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 14))
+        else:
+            try:
+                next_ip = str(phone_next_target_ip(config, phone_load_state()))
+            except Exception as exc:
+                next_ip = str(exc)
+            summary_label(summary_panel, "Next IP", next_ip, 1)
+            summary_label(summary_panel, "Phone range", f"{config.target_start} - {config.target_end}", 2)
+            summary_label(summary_panel, "Network", f"{config.scan_subnet}  ({config.netmask})", 3)
+            summary_label(summary_panel, "Gateway / TFTP", f"{config.gateway} / {config.tftp_server}", 4)
+            if config.use_dhcp_server:
+                summary_label(summary_panel, "Interface", f"{config.staging_interface} as {config.dhcp_server_ip}", 5)
+                summary_label(summary_panel, "DHCP pool", f"{config.dhcp_pool_start} - {config.dhcp_pool_end}", 6)
+            else:
+                summary_label(summary_panel, "Staging", "SSH scan mode (no DHCP server)", 5)
 
         recent_panel = ctk.CTkFrame(left, fg_color="#182029", corner_radius=8)
         recent_panel.grid(row=1, column=0, sticky="nsew")
@@ -461,24 +487,111 @@ def show(app):
             if worker_state["running"]:
                 start_button.configure(state="disabled")
 
-    def add_settings_panel(parent, title, row):
+    def add_settings_panel(parent, title, row, subtitle=None):
         panel = ctk.CTkFrame(parent, fg_color="#182029", corner_radius=8)
         panel.grid(row=row, column=0, sticky="ew", pady=(0, 12))
-        panel.grid_columnconfigure((0, 1, 2), weight=1)
+        panel.grid_columnconfigure((0, 1, 2), weight=1, uniform="settings")
         ctk.CTkLabel(
             panel,
             text=title,
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color="#f7fafc",
         ).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(14, 0))
+        if subtitle:
+            ctk.CTkLabel(panel, text=subtitle, text_color=HINT_COLOR, anchor="w").grid(
+                row=1, column=0, columnspan=3, sticky="w", padx=14
+            )
         return panel
 
-    def save_settings_from_view():
-        try:
-            read_phone_values()
-        except Exception as exc:
-            messagebox.showerror("Invalid Phone Configuration", str(exc), parent=window)
+    def field_message(frame, key, row, note, entry=None):
+        message = ctk.CTkLabel(
+            frame,
+            text=note,
+            text_color=HINT_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=290,
+            font=ctk.CTkFont(size=11),
+        )
+        message.grid(row=row, column=0, sticky="ew", pady=(3, 0))
+        form_fields[key] = {"entry": entry, "message": message, "note": note}
+
+    def form_field(parent, key, label, row, column, note="", show=""):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=row, column=column, sticky="new", padx=14, pady=(12, 6))
+        frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(frame, text=label, text_color="#9aa8b6").grid(row=0, column=0, sticky="w")
+        entry = ctk.CTkEntry(
+            frame,
+            textvariable=values[key],
+            border_width=1,
+            border_color=ENTRY_BORDER_COLOR,
+            fg_color="#101418",
+            show=show,
+        )
+        entry.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        field_message(frame, key, 2, note, entry)
+        return entry
+
+    def refresh_validation():
+        validation_job["id"] = None
+        if not window.winfo_exists():
             return
+        _config, errors, hints = phone_resolve_settings(settings_payload())
+        use_dhcp = use_dhcp_var.get()
+        for key, field in form_fields.items():
+            if not field["message"].winfo_exists():
+                continue
+            raw = values[key].get().strip()
+            if key in errors:
+                text, color, border = errors[key], ERROR_COLOR, ERROR_COLOR
+            else:
+                hint = hints.get(key, "")
+                # Echoing a value the user typed in full adds nothing; show the note instead.
+                text = hint if hint and hint != raw else field["note"]
+                color, border = HINT_COLOR, ENTRY_BORDER_COLOR
+            if key in PHONE_DHCP_KEYS and not use_dhcp:
+                text, color, border = "Not used without the built-in DHCP server.", HINT_COLOR, ENTRY_BORDER_COLOR
+            field["message"].configure(text=text, text_color=color)
+            if field["entry"] is not None and field["entry"].winfo_exists():
+                field["entry"].configure(
+                    border_color=border,
+                    state="normal" if use_dhcp or key not in PHONE_DHCP_KEYS else "disabled",
+                )
+        if interface_menu is not None and interface_menu.winfo_exists() and phone_interfaces:
+            interface_menu.configure(state="normal" if use_dhcp else "disabled")
+        if errors.keys() & PHONE_ADVANCED_KEYS and not advanced_state["open"]:
+            toggle_advanced()
+        if save_button is not None and save_button.winfo_exists():
+            save_button.configure(state="disabled" if errors else "normal")
+            # Name the first problem: it may sit in a panel scrolled out of view.
+            first = next(iter(errors.values()), "")
+            extra = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+            status_var.set(f"{first}{extra}" if errors else "All settings are valid.")
+
+    def schedule_validation(*_args):
+        if validation_job["id"] is None and window.winfo_exists():
+            validation_job["id"] = window.after(120, refresh_validation)
+
+    def toggle_advanced():
+        advanced_state["open"] = not advanced_state["open"]
+        panel = advanced_state.get("panel")
+        button = advanced_state.get("button")
+        if panel is None or not panel.winfo_exists():
+            return
+        if advanced_state["open"]:
+            panel.grid()
+        else:
+            panel.grid_remove()
+        button.configure(text=("Hide" if advanced_state["open"] else "Show") + " advanced settings")
+
+    def save_settings_from_view():
+        config, errors, _hints = phone_resolve_settings(settings_payload())
+        if errors:
+            refresh_validation()
+            return
+        # Store "10.32.10.64 255.255.255.192" and similar as plain CIDR.
+        values["scan_subnet"].set(str(config.scan_subnet))
         phone_save_settings(settings_payload())
         status_var.set("Phone configurator settings saved.")
         show_run_view()
@@ -489,9 +602,10 @@ def show(app):
         show_run_view()
 
     def show_settings_view():
-        nonlocal interface_menu, rescan_button
+        nonlocal interface_menu, rescan_button, save_button
         clear_frame(content)
         clear_frame(footer)
+        form_fields.clear()
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
         settings_scroll = ctk.CTkScrollableFrame(
@@ -503,15 +617,24 @@ def show(app):
         settings_scroll.grid(row=0, column=0, sticky="nsew")
         settings_scroll.grid_columnconfigure(0, weight=1)
 
-        network_panel = add_settings_panel(settings_scroll, "Static Phone Network", 0)
-        dialog_entry_group(network_panel, "Scan subnet", values["scan_subnet"], 1, 0)
-        dialog_entry_group(network_panel, "Target start", values["target_start"], 1, 1)
-        dialog_entry_group(network_panel, "Target end", values["target_end"], 1, 2)
-        dialog_entry_group(network_panel, "Netmask", values["netmask"], 2, 0)
-        dialog_entry_group(network_panel, "Gateway", values["gateway"], 2, 1)
-        dialog_entry_group(network_panel, "TFTP server", values["tftp_server"], 2, 2)
+        network_panel = add_settings_panel(
+            settings_scroll,
+            "Phone Network",
+            0,
+            "The netmask and broadcast follow from the network. Addresses can be typed in full or as the last number.",
+        )
+        form_field(network_panel, "scan_subnet", "Network", 2, 0, "For example 10.32.10.64/26")
+        form_field(network_panel, "target_start", "First phone IP", 2, 1, "For example 115")
+        form_field(network_panel, "target_end", "Last phone IP", 2, 2, "For example 119")
+        form_field(network_panel, "gateway", "Gateway", 3, 0, "Leave blank to use the last usable address")
+        form_field(network_panel, "tftp_server", "TFTP server", 3, 1, "For example 114")
 
-        dhcp_panel = add_settings_panel(settings_scroll, "DHCP Staging", 1)
+        dhcp_panel = add_settings_panel(
+            settings_scroll,
+            "Staging",
+            1,
+            "The PC gives the phone a temporary address, then sets its static IP over SSH.",
+        )
         ctk.CTkCheckBox(
             dhcp_panel,
             text="Run built-in DHCP server",
@@ -519,12 +642,15 @@ def show(app):
             text_color="#d8e0e7",
             fg_color="#1f6f8b",
             hover_color="#2382a4",
-        ).grid(row=1, column=0, sticky="w", padx=14, pady=14)
-        ctk.CTkLabel(dhcp_panel, text="Host interface", text_color="#9aa8b6").grid(
-            row=1, column=1, sticky="w", padx=14, pady=(14, 0)
+        ).grid(row=2, column=0, sticky="w", padx=14, pady=(30, 6))
+        interface_frame = ctk.CTkFrame(dhcp_panel, fg_color="transparent")
+        interface_frame.grid(row=2, column=1, columnspan=2, sticky="new", padx=14, pady=(12, 6))
+        interface_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(interface_frame, text="Phone is connected to", text_color="#9aa8b6").grid(
+            row=0, column=0, sticky="w"
         )
         interface_menu = ctk.CTkOptionMenu(
-            dhcp_panel,
+            interface_frame,
             variable=staging_interface_var,
             values=["Loading interfaces..."],
             fg_color="#101418",
@@ -534,33 +660,44 @@ def show(app):
             dropdown_hover_color="#1f6f8b",
             state="disabled",
         )
-        interface_menu.grid(row=2, column=1, sticky="ew", padx=14, pady=(5, 14))
+        interface_menu.grid(row=1, column=0, sticky="ew", pady=(5, 0))
         rescan_button = ctk.CTkButton(
-            dhcp_panel,
-            text="Refresh Interfaces",
-            width=136,
+            interface_frame,
+            text="Refresh",
+            width=86,
             command=refresh_phone_interfaces_async,
             fg_color="#2f3b46",
             hover_color="#3b4a57",
         )
-        rescan_button.grid(row=2, column=2, sticky="w", padx=14, pady=(5, 14))
+        rescan_button.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(5, 0))
+        field_message(interface_frame, "staging_interface", 2, "Network interface on this PC")
         refresh_phone_interfaces_async()
-        dialog_entry_group(dhcp_panel, "Interface IP to set", values["dhcp_server_ip"], 3, 0)
-        dialog_entry_group(dhcp_panel, "DHCP pool start", values["dhcp_pool_start"], 3, 1)
-        dialog_entry_group(dhcp_panel, "DHCP pool end", values["dhcp_pool_end"], 3, 2)
-        dialog_entry_group(dhcp_panel, "Lease seconds", values["dhcp_lease_seconds"], 4, 0)
-        dialog_entry_group(dhcp_panel, "DHCP wait", values["dhcp_wait_seconds"], 4, 1)
+        form_field(dhcp_panel, "dhcp_server_ip", "PC staging IP", 3, 0, "Leave blank for auto")
+        form_field(dhcp_panel, "dhcp_pool_start", "DHCP pool start", 3, 1, "Leave blank for auto")
+        form_field(dhcp_panel, "dhcp_pool_end", "DHCP pool end", 3, 2, "Leave blank for auto")
 
-        ssh_panel = add_settings_panel(settings_scroll, "SSH", 2)
-        dialog_entry_group(ssh_panel, "Username", values["ssh_username"], 1, 0)
-        dialog_entry_group(ssh_panel, "SSH port", values["ssh_port"], 1, 1)
-        dialog_entry_group(ssh_panel, "SSH probe seconds", values["dhcp_ssh_probe_seconds"], 1, 2)
-        password_entry = dialog_entry_group(ssh_panel, "Password", values["ssh_password"], 2, 0)
-        password_entry.configure(show="*")
+        ssh_panel = add_settings_panel(settings_scroll, "Phone Login", 2)
+        form_field(ssh_panel, "ssh_username", "SSH username", 1, 0)
+        form_field(ssh_panel, "ssh_password", "SSH password", 1, 1, show="*")
 
-        verify_panel = add_settings_panel(settings_scroll, "Verification", 3)
-        dialog_entry_group(verify_panel, "Ping timeout", values["ping_timeout_seconds"], 1, 0)
-        dialog_entry_group(verify_panel, "Ping interval", values["ping_interval_seconds"], 1, 1)
+        advanced_button = ctk.CTkButton(
+            settings_scroll,
+            text="Show advanced settings",
+            width=190,
+            command=toggle_advanced,
+            fg_color="#2f3b46",
+            hover_color="#3b4a57",
+        )
+        advanced_button.grid(row=3, column=0, sticky="w", pady=(0, 12))
+        advanced_panel = add_settings_panel(settings_scroll, "Advanced", 4, "Timeouts in seconds. The defaults suit most phones.")
+        form_field(advanced_panel, "ssh_port", "SSH port", 2, 0)
+        form_field(advanced_panel, "dhcp_ssh_probe_seconds", "SSH probe", 2, 1, "Wait for SSH after DHCP")
+        form_field(advanced_panel, "dhcp_lease_seconds", "DHCP lease", 2, 2)
+        form_field(advanced_panel, "dhcp_wait_seconds", "DHCP wait", 3, 0, "Wait for the phone to ask for an address")
+        form_field(advanced_panel, "ping_timeout_seconds", "Ping timeout", 3, 1, "Wait for the phone on its new IP")
+        form_field(advanced_panel, "ping_interval_seconds", "Ping interval", 3, 2)
+        advanced_state.update(panel=advanced_panel, button=advanced_button, open=False)
+        advanced_panel.grid_remove()
 
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(footer, textvariable=status_var, text_color="#9aa8b6", anchor="w").grid(
@@ -574,14 +711,18 @@ def show(app):
             fg_color="#2f3b46",
             hover_color="#3b4a57",
         ).grid(row=0, column=1, padx=(0, 8))
-        ctk.CTkButton(
+        save_button = ctk.CTkButton(
             footer,
             text="Save Settings",
             width=128,
             command=save_settings_from_view,
             fg_color="#2d8a66",
             hover_color="#35a579",
-        ).grid(row=0, column=2)
+        )
+        save_button.grid(row=0, column=2)
+        refresh_validation()
 
+    for variable in [*values.values(), use_dhcp_var]:
+        variable.trace_add("write", schedule_validation)
     show_run_view()
     poll_log_queue()
