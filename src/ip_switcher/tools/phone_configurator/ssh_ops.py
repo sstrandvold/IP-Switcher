@@ -206,9 +206,10 @@ def phone_interface_has_ip(interface_name, ip_address):
     script = f"""
 $ErrorActionPreference = 'Stop'
 $match = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias '{escaped_name}' -ErrorAction SilentlyContinue |
-    Where-Object {{ $_.IPAddress -eq '{escaped_ip}' }} |
+    Where-Object {{ $_.IPAddress -eq '{escaped_ip}' -and $_.AddressState -eq 'Preferred' }} |
     Select-Object -First 1
-if ($match) {{ 'true' }} else {{ 'false' }}
+$adapter = Get-NetAdapter -Name '{escaped_name}' -ErrorAction SilentlyContinue
+if ($match -and $adapter -and $adapter.Status -eq 'Up') {{ 'true' }} else {{ 'false' }}
 """
     result = run_powershell(script)
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
@@ -223,7 +224,8 @@ def phone_wait_for_interface_ip(config, progress=None, timeout_seconds=20):
             return
         time.sleep(1)
     raise RuntimeError(
-        f"{config.staging_interface} did not show {config.dhcp_server_ip} within {timeout_seconds} seconds."
+        f"{config.staging_interface} did not get {config.dhcp_server_ip} ready within {timeout_seconds} seconds. "
+        "Check that the cable is connected and that no other device uses this IP."
     )
 
 

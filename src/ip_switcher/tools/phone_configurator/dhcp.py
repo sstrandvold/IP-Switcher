@@ -104,8 +104,17 @@ def phone_probe_other_dhcp_servers(config, progress=None, timeout_seconds=4):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.bind(("", 68))
             sock.settimeout(0.5)
-            sock.sendto(discover, ("255.255.255.255", 67))
-            sock.sendto(discover, (str(config.scan_subnet.broadcast_address), 67))
+            # Windows can report the new IP before its routes exist; sendto then fails with 10065.
+            send_deadline = time.monotonic() + 10
+            while True:
+                try:
+                    sock.sendto(discover, ("255.255.255.255", 67))
+                    sock.sendto(discover, (str(config.scan_subnet.broadcast_address), 67))
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) != 10065 or time.monotonic() >= send_deadline:
+                        raise
+                    time.sleep(1)
             deadline = time.monotonic() + timeout_seconds
             while time.monotonic() < deadline:
                 try:
